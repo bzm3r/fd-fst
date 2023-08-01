@@ -108,16 +108,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e496a50fda8aacccc86d7529e2c1e0892dbd0f898a6b5645b5561b89c3210efa"
 
 [[package]]
-name = "fd_fst"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "fst",
- "memmap2",
- "rkyv",
-]
-
-[[package]]
 name = "fst"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -216,6 +206,16 @@ name = "once_cell"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd8b5dd2ae5ed71462c540258bedcb51965123ad7e7ccf4b9a8cafaa4a63576d"
+
+[[package]]
+name = "playground"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "fst",
+ "memmap2",
+ "rkyv",
+]
 
 [[package]]
 name = "proc-macro2"
