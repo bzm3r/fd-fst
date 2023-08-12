@@ -37,8 +37,6 @@ impl From<&Path> for SplitPath {
             fst_outputs: None,
         }
     }
-
-    fn gen_fst_outputs(&mut self, index: usize) {}
 }
 
 pub struct PathIndexBuilder {
@@ -177,28 +175,28 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 fn main() {
-    println!("Hello, world!");
-    let drive_entries = read_dir("C:\\")
-        .expect("Could not open C:\\")
-        .collect::<IoResult<Vec<DirEntry>>>()
-        .unwrap();
-
-    let per_segment_fst: Vec<Map<Vec<u8>>> = vec![];
-
-    for entry in drive_entries.iter() {
-        let path = normalize(&entry.path());
-        let metadata = entry
-            .metadata()
-            .map_err(|io_err| {
-                format!(
-                    "Could not get metadata for path {}. Reason: {io_err}",
-                    path.to_string_lossy()
-                )
-            })
-            .unwrap();
-        for component in path.components() {}
-        if metadata.is_dir() {
-            queue_fst_creation(path)
-        }
-    }
+    // println!("Hello, world!");
+    // let drive_entries = read_dir("C:\\")
+    //     .expect("Could not open C:\\")
+    //     .collect::<IoResult<Vec<DirEntry>>>()
+    //     .unwrap();
+    //
+    // let per_segment_fst: Vec<Map<Vec<u8>>> = vec![];
+    //
+    // for entry in drive_entries.iter() {
+    //     let path = normalize(&entry.path());
+    //     let metadata = entry
+    //         .metadata()
+    //         .map_err(|io_err| {
+    //             format!(
+    //                 "Could not get metadata for path {}. Reason: {io_err}",
+    //                 path.to_string_lossy()
+    //             )
+    //         })
+    //         .unwrap();
+    //     for component in path.components() {}
+    //     if metadata.is_dir() {
+    //         queue_fst_creation(path)
+    //     }
+    // }
 }
