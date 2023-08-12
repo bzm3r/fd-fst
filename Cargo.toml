@@ -15,3 +15,4 @@ rkyv = { version = "0.7.42", default-features = false, features = [
     "size_64",
     "std",
 ] }
+paste = "1.0.14"

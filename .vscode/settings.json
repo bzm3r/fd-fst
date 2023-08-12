@@ -1,0 +1,6 @@
+{
+    "rust-analyzer.linkedProjects": [
+        ".\\play_count_dir\\Cargo.toml",
+        ".\\play_meta\\Cargo.toml"
+    ]
+}
