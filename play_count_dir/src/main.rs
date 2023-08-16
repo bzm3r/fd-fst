@@ -4,14 +4,13 @@
 
 use paste::paste;
 use std::cmp::Ordering;
-use std::fmt::{Display, LowerExp};
+use std::fmt::Debug;
 use std::fs::{read_dir, DirEntry};
 use std::io::Error as IoError;
 use std::io::Result as IoResult;
-use std::ops::{Add, Div, Mul, Sub};
-use std::path::{Path, PathBuf};
-// use std::slice::Iter as SliceIter;
 use std::iter::Sum;
+use std::ops::Add;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, TryRecvError};
 use std::sync::mpsc::{Receiver, SendError, Sender};
 use std::thread::JoinHandle;
@@ -21,687 +20,96 @@ use std::time::{Duration, Instant};
 #[macro_use]
 mod macro_tools;
 
-const NUM_THREADS: usize = 4;
-const DEFAULT_EXECUTE_LOOP_SLEEP: Duration = Duration::from_micros(0);
+const NUM_THREADS: usize = 3;
+const DEFAULT_EXECUTE_LOOP_SLEEP: Duration = Duration::from_micros(50);
 const UPDATE_PRINT_DELAY: Duration = Duration::from_secs(5);
 // const MAX_TOTAL_SUBMISSION: usize = NUM_THREADS * 500;
 const MAX_HISTORY: usize = 10;
 // const MIN_TARGET_SIZE: usize = 1;
-const MAX_DISPATCH_SIZE: usize = 8;
-const MAX_IN_FLIGHT: usize = 8;
+// const MAX_DISPATCH_SIZE: usize = 2_usize.pow(6);
+const MAX_TOTAL_DISPATCH_SIZE: usize = if (NUM_THREADS * 10_usize.pow(4)) < (6 * 10_usize.pow(4)) {
+    ((NUM_THREADS * 10_usize.pow(4)) as f64 * 1e-2) as usize
+} else {
+    ((NUM_THREADS * 10_usize.pow(4)) as f64 * 1e-2) as usize
+    //((6 * 10_usize.pow(4)) as f64 * 1e-2) as usize
+};
+// const MAX_IN_FLIGHT: usize = MAX_DISPATCH_SIZE * 2_usize.pow(10);
+// const PESSIMISTIC_PROCESSING_RATE_ESTIMATE: f64 = 1e3;
 
-trait SafeData
-where
-    Self: Sized,
-{
-    fn zero() -> Self;
-    fn none() -> Self;
-}
-
-trait SimpleSafeData: SafeData
-where
-    Self: Sized,
-{
-    type Inner: PartialEq + PartialOrd + Clone + Copy + Default;
-    fn inner(&self) -> Option<Self::Inner>;
-}
-
-trait SafeInto<Target>
-where
-    Self: SafeData + Sized,
-{
-    fn into_target(self) -> Target;
-}
-
-trait FromSafe<Safe>
-where
-    Safe: SafeData + SafeInto<Self>,
-    Self: Sized,
-{
-    fn from_safe(safe: Safe) -> Self {
-        safe.into_target()
-    }
-}
-
-impl<Safe, Target> FromSafe<Safe> for Target where Safe: SafeData + SafeInto<Self> {}
-
-trait FromSource<Source> {
-    fn from_source(source: Source) -> Self;
-}
-
-trait IntoSafe<Safe>
-where
-    Self: Sized,
-    Safe: SafeData + FromSource<Self>,
-{
-    fn into_safe(self) -> Safe {
-        Safe::from_source(self)
-    }
-}
-
-impl<Safe, Source> IntoSafe<Safe> for Source
-where
-    Self: Sized,
-    Safe: SafeData + FromSource<Self>,
-{
-}
-
-trait SafeAdd<Rhs>
-where
-    Self: SafeData + FromSource<Rhs> + IntoSafe<<Self as SafeAdd<Rhs>>::Output>,
-    Rhs: IntoSafe<Self>,
-{
-    type Output: SafeData + FromSource<Self>;
-    fn safe_add(self, rhs: Rhs) -> Self::Output;
-}
-
-trait SafeMul<Rhs>
-where
-    Self: SafeData + FromSource<Rhs> + IntoSafe<<Self as SafeMul<Rhs>>::Output>,
-    Rhs: IntoSafe<Self>,
-{
-    type Output: SafeData + FromSource<Self>;
-    fn safe_mul(self, rhs: Rhs) -> Self::Output;
-}
-
-trait SafeSub<Rhs>
-where
-    Self: SafeData + FromSource<Rhs> + IntoSafe<<Self as SafeSub<Rhs>>::Output>,
-    Rhs: IntoSafe<Self>,
-{
-    type Output: SafeData + FromSource<Self>;
-    fn safe_sub(self, rhs: Rhs) -> Self::Output;
-}
-
-trait SafeDiv<Rhs>
-where
-    Self: SafeData + FromSource<Rhs> + IntoSafe<<Self as SafeDiv<Rhs>>::Output>,
-    Rhs: IntoSafe<Self>,
-{
-    type Output: SafeData + FromSource<Self>;
-    fn safe_div(self, rhs: Rhs) -> Self::Output;
-}
-
-macro_rules! impl_safe_arithmetics {
-    // finished
-    (
-        $(default:[$($default_contents:tt)*])?
-    ) => {};
-    // expand all
-    (
-        $(default:[$($default_contents:tt)*])?
-        ( all $($rest_op:tt)* )
-        $($other_ops:tt)*
-    ) => {
-        impl_safe_arithmetics!(
-            $(default:[$($default_contents)*])?
-            (Add$($rest_op)*)
-            (Mul$($rest_op)*)
-            (Sub$($rest_op)*)
-            (Div$($rest_op)*)
-            $($other_ops)*
-        );
-    };
-    // nothing provided but the operation itself, so we rely on defaults
-    (
-        default:[lhs:$lhs:ty, rhs:[$($rhs:ty),*], out:$out:ty ]
-        ( $op:ident )
-        $($other_ops:tt)*
-    ) => {
-        impl_safe_arithmetics!(
-            default:[lhs:$lhs, rhs:[$($rhs),*], out:$out ]
-            ($op(lhs:$lhs, rhs:[$($rhs),*]) -> $out)
-            $($other_ops)*
-        );
-    };
-    // nothing provided but the operation and the rhs
-    (
-        default:[lhs:$lhs:ty, rhs:[$($default_rhs:tt)*], out:$out:ty ]
-        ( $op:ident(rhs:[$($rhs:ty),*]) )
-        $($other_ops:tt)*
-    ) => {
-        impl_safe_arithmetics!(
-            default:[lhs:$lhs, rhs:[$($rhs),*], out:$out ]
-            ($op(lhs:$lhs, rhs:[$($rhs),*]) -> $out)
-            $($other_ops)*
-        );
-    };
-    // expand provided right-hand-sides
-    (
-        $(default:[$($default_contents:tt)*])?
-        ( $op:ident(lhs:$lhs:ty, rhs:[$($rhs:ty),*]) -> $out:ty )
-        $($other_ops:tt)*
-    ) => {
-        impl_safe_arithmetics!(
-            $(default:[$($default_contents)*])?
-            $(
-                ($op(lhs:$lhs, rhs:$rhs) -> $out)
-            )*
-            $($other_ops)*
-        );
-    };
-    // expand provided right-hand-sides
-    (
-        $(default:[$($default_contents:tt)*])?
-        ( $op:ident|lhs:$lhs:ty, rhs:[$($rhs:ty),*]| -> $out:ty { $op_def:expr })
-        $($other_ops:tt)*
-    ) => {
-        impl_safe_arithmetics!(
-            $(default:[$($default_contents)*])?
-            $(
-                ($op |lhs:$lhs, rhs:$rhs| -> $out { $op_def} )
-            )*
-            $($other_ops)*
-        );
-
-    };
-    (
-        $(default:[$($default_contents:tt)*])?
-        ($op:ident(lhs:$lhs:ty, rhs:$rhs:ty) -> $out:ty)
-        $($other_ops:tt)*
-    ) => {
-        paste! {
-            impl [< Safe $op >]<$rhs> for $lhs
-                where
-                    Self: SafeData + IntoSafe<$out> + FromSource<$rhs>,
-            {
-                type Output = $out;
-                fn [< safe_ $op:lower >](self, rhs: $rhs) -> Self::Output {
-                    self.inner()
-                        .and_then(
-                            |x| Self::from_source(rhs)
-                                    .inner()
-                                    .and_then(
-                                        |y| x.[< checked_ $op >](y)
-                                    )
-                        ).into_safe()
-                }
-            }
-        }
-        impl_safe_arithmetics!(
-            $(default:[$($default_contents)*])?
-            $($other_ops)*
-        );
-    };
-    // closure defining operation is provided
-    (
-        $(default:[$($default_contents:tt)*])?
-        (
-            $op:ident(
-                $lhs_id:ident : $lhs:ty,
-                $rhs_id:ident : $rhs:ty
-            ) -> $out:ty
-            {
-                $op_def:expr
-            }
-        )
-        $($other_ops:tt)*
-    ) => {
-        paste! {
-            impl<$rhs> [< Safe $op >]<$rhs> for $lhs
-                where
-                    Self: SafeData + IntoSafe<$out> + FromSource<$rhs>,
-            {
-                type Output = $out;
-                fn [< safe_ $op:lower >](self, rhs: $rhs) -> Self::Output {
-                    // apply function to argument
-                    (|$lhs_id: $lhs, $rhs_id: $rhs| -> $out { $op_def })(self, rhs)
-                }
-            }
-        }
-        impl_safe_arithmetics!(
-            $(default:[$($default_contents)*])?
-            $($other_ops)*
-        );
-    };
-}
-
-macro_rules! simple_safe_struct {
-    ($safe:ty, $inner:ty) => {
-        paste! {
-            #[derive(Clone, Copy, Debug)]
-            struct [< $safe >](Option<$inner>);
-        }
-    };
-}
-
-macro_rules! impl_required_from_source {
-    ($safe:ty, $other:ty, $map_args:ident, $map_body:block ) => {
-        impl FromSource<$other> for $safe {
-            fn from_source(source: $other) -> $safe {
-                (|$map_args: $other| -> $safe { $map_body })(source)
-            }
-        }
-    };
-}
-
-macro_rules! impl_extra_from_source {
-    ($safe:ty, $other_ty_id:ident, $other:ty) => {
-        paste! {
-            trait [< From $other_ty_id For $safe:camel >] where Self: Sized + FromSource<$other> {
-                fn [< from_ $other_ty_id:snake:lower >](source: $other) -> Self {
-                    Self::from_source(source)
-                }
-            }
-            impl [< From $other_ty_id For $safe:camel >] for $safe {}
-
-            trait [< Into $safe:camel For $other_ty_id >] where Self: Sized, $safe: FromSource<Self> {
-                fn [< into_ $safe:snake:lower >](self) -> $safe {
-                    <Self as IntoSafe<$safe>>::into_safe(self)
-                }
-            }
-            impl [< Into $safe:camel For $other_ty_id >] for $other {}
-        }
-    };
-}
-
-macro_rules! impl_from_source {
-    (  $safe:ty, create_extras:($other_ty_id:ident, $other:ty), $map_args:ident, $map_body:block ) => {
-        impl_required_from_source!($safe, $other, $map_args, $map_body);
-        impl_extra_from_source!($safe, $other_ty_id, $other);
-    };
-    ( $safe:ty, omit_extras:$other:ty, $map_args:ident, $map_body:block) => {
-        impl_required_from_source!($safe, $other, $map_args, $map_body);
-    };
-}
-
-macro_rules! impl_required_into_target {
-    ($safe:ty, $other:ty, $map_inp_id:ident, $map_body:block ) => {
-        paste! {
-            impl SafeInto<$other> for $safe {
-                fn into_target(self) -> $other {
-                    (|$map_inp_id: $safe| -> $other { $map_body })(self)
-                }
-            }
-        }
-    };
-}
-
-macro_rules! impl_extra_into_target {
-    ($safe:ty, $other_ty_id:ident, $other:ty) => {
-        paste! {
-            trait [< Into $other_ty_id For $safe:camel >] where Self: Sized + SafeInto<$other> {
-                fn [< into_ $other_ty_id:snake:lower >](self) -> $other {
-                    self.into_target()
-                }
-            }
-            impl [< Into $other_ty_id For $safe:camel >] for $safe {}
-
-            trait [< From $safe:camel For $other_ty_id >] where Self: Sized {
-                fn [< from_ $safe:snake:lower >](safe: $safe) -> $other {
-                    safe.into_target()
-                }
-            }
-
-            impl [< From $safe:camel For $other_ty_id >] for $other {}
-        }
-    };
-}
-
-macro_rules! impl_into_target {
-    (  $safe:ty, create_extras:($other_ty_id:ident, $other:ty), $map_args:ident, $map_body:block ) => {
-        impl_required_into_target!($safe, $other, $map_args, $map_body);
-        impl_extra_into_target!($safe, $other_ty_id, $other);
-    };
-    ( $safe:ty, omit_extras:$other:ty, $map_args:ident, $map_body:block) => {
-        impl_required_into_target!($safe, $other, $map_args, $map_body);
-    };
-}
-
-macro_rules! impl_conversions_helper {
-    (   $macro_id:ident, $safe:ty, Option<$inner:ty>, $($tail:tt)* ) => {
-        paste! {
-            $macro_id!($safe, create_extras:([< Opt $inner:camel >], Option<$inner>), $($tail)*);
-        }
-    };
-    (   $macro_id:ident, $safe:ty, $other:ty, $($tail:tt)* ) => {
-        paste! {
-            $macro_id!($safe, create_extras:([< $other:camel > ], $other), $($tail)*);
-        }
-    };
-    (   [omit_extras] $macro_id:ident, $safe:ty, $other:ty, $($tail:tt)* ) => {
-        paste! {
-            $macro_id!($safe, omit_extras:$other, $($tail)*);
-        }
-    };
-}
-
-macro_rules! impl_conversions {
-    (   ($safe:ty) [omit_extras] from($map_args:ident : $other:ty) $map_body:block ) => {
-        impl_conversions_helper!([omit_extras] impl_from_source, $safe, $other, $map_args, $map_body);
-    };
-    (   ($safe:ty) [omit_extras] $map_args:ident into($other:ty) $map_body:block ) => {
-        impl_conversions_helper!([omit_extras] impl_into_target, $safe, $other, $map_args, $map_body);
-    };
-    (   ($safe:ty) from($map_args:ident : $($other:tt)*) $map_body:block ) => {
-        impl_conversions_helper!(impl_from_source, $safe, $($other)*, $map_args, $map_body);
-    };
-    (   ($safe:ty) $map_args:ident into($($other:tt)*) $map_body:block ) => {
-        impl_conversions_helper!(impl_into_target, $safe, $($other)*, $map_args, $map_body);
-    };
-}
-
-macro_rules! impl_simple_safe_data {
-    ( ($safe:ty, $inner:ty) [ zero: $zero:expr, none: $none:expr ] $($rest:tt)* ) => {
-        impl SafeData for $safe {
-            fn zero() -> Self {
-                $zero
-            }
-            fn none() -> Self {
-                $none
-            }
-        }
-        impl SimpleSafeData for $safe {
-            type Inner = $inner;
-            fn inner(&self) -> $inner {
-                self.0
-            }
-        }
-        impl_simple_safe_data!(($safe, $inner) $($rest)*);
-    };
-    ( ($safe:ty, $inner:ty) [default: $default:expr ] $($rest:tt)* ) => {
-        impl Default for $safe {
-            fn default() -> Self {
-                $default
-            }
-        }
-        impl_simple_safe_data!(($safe, $inner) $($rest)*);
-    };
-    ( ($safe:ty, $inner:ty) ) => {};
-}
-
-macro_rules! create_safe_wrapper {
-    (
-        [ type_def: $($struct_create_macro:ident)?($safe:ident($inner:ident)) ] $($rest:tt)*
-    ) => {
-        $($struct_create_macro!($safe, $inner);)?
-        create_safe_wrapper!(($safe, $inner) $($rest)*);
-    };
-    (
-        ($safe:ty, $inner:ty) [ impl_safe: $impl_safe_data_macro:ident($($args:tt)*) ] $($rest:tt)*
-    ) => {
-        $impl_safe_data_macro!(($safe, $inner) $($args)*);
-        create_safe_wrapper!(($safe, $inner) $($rest)*);
-    };
-    (
-        ($safe:ty, $inner:ty)
-        [ conversion_maps:
-            $(
-                (
-                    $($map_args:tt)*
-                )
-            )*
-        ]
-        $($rest:tt)*
-    ) => {
-        $(
-            impl_conversions!(($safe) $($map_args)*);
-        )*
-        create_safe_wrapper!(($safe, $inner) $($rest)*);
-    };
-    (
-        ($safe:ty, $inner:ty) [ safe_arithmetic: $($safe_arithmetic_args:tt)* ] $($rest:tt)*
-    ) => {
-        impl_safe_arithmetics!(
-            default:[lhs:$safe, rhs:[Self], out:Self]
-            $($safe_arithmetic_args)*
-        );
-        create_safe_wrapper!(($safe, $inner) $($rest)*);
-    };
-    (
-        ($safe:ty, $inner:ty)
-    ) => {};
-}
-
-macro_rules! create_safe_data_types {
-    ( $(($($args:tt)*))* ) => {
-        $(
-            create_safe_wrapper!($($args)*);
-        )*
-    }
-}
-
-create_safe_data_types!(
-    (
-        [ type_def: simple_safe_struct(SafeF64(f64)) ]
-        [ impl_safe:
-            impl_simple_safe_data(
-                [zero: (0.0_f64).into_safe_f64(), none: Self(None)]
-                [ default: Self::zero() ]
-            )
-        ]
-        [
-            conversion_maps:
-                ( [omit_extras] safe into(SafeF64) { safe })
-                ( [omit_extras] from(other: SafeF64) { other })
-                ( from(float: f64) { SafeF64( (float.is_finite() && !float.is_nan()).then_some(float) ) })
-                ( from(source: SafeUsize) { source.into_opt_f64().into_safe() } )
-                ( from(opt_float: Option<f64>)
-                    { match opt_float {
-                        Some(f) => f.into_safe_f64(),
-                        _ => SafeF64(None)
-                    } }
-                )
-                ( safe into(Option<Duration>) { safe.inner().map(|f| Duration::from_secs_f64(f)) } )
-                (from(duration: Duration) { duration.as_secs_f64().into_safe_f64() }  )
-                (from(duration: Option<Duration>) { duration.map(|d| d.as_secs_f64()).into_safe_f64() }  )
-                ( safe into(Option<usize>) { safe.inner().map(|f| f.round().try_into().ok() ) } )
-                ( safe into(Option<u32>) { safe.inner().map(|f| f.round().try_into().ok() ) } )
-        ]
-        [
-            safe_arithmetic:
-                (all(rhs:[SafeF64, f64, SafeUsize, SafeU32]))
-        ]
-    )
-    (
-        [ type_def: simple_safe_struct(SafeDuration(Duration))]
-        [ impl_safe:
-            impl_simple_safe_data(
-                [zero: Duration::from_secs(0).into_safe_duration(), none: Self(None)]
-                [ default: Self::zero() ]
-            )
-        ]
-        [
-            safe_arithmetic:
-                (Add)
-                (Mul(lhs: SafeDuration, rhs:u32) -> SafeDuration { lhs.inner().map( |duration| duration.checked_div(rhs) ) } )
-                (Sub)
-                (Div(rhs:[SafeU32]))
-        ]
-        [
-            conversion_maps:
-                (from(source: Duration) { SafeDuration(
-                    source.as_secs_f64().into_safe_f64().into_opt_duration()) })
-                ( [omit_extras] safe into(SafeDuration) { safe })
-                ( [omit_extras] from(other: SafeDuration) { other })
-                (from(source: Option<Duration>) {SafeDuration(
-                    source.into_safe_f64().into_opt_duration() ) })
-                (from(source: f64) {SafeDuration(
-                    source.into_safe_f64().into_opt_duration() ) })
-                (safe into(SafeF64) { safe.inner().into_safe_f64() })
-                (from(source: SafeUsize) {SafeDuration(
-                    source.into_safe_usize().into_opt_duration() )}  )
-                (from(source: SafeU32) {SafeDuration(
-                    source.into_safe_usize().into_opt_duration() )}  )
-        ]
-      )
-      (
-        [ type_def: simple_safe_struct(SafeUsize(usize))]
-        [ impl_safe:
-            impl_simple_safe_data(
-                [zero: 0_usize.into_safe_usize(), none: Self(None)]
-                [default: Self::zero() ]
-            )
-        ]
-        [
-            safe_arithmetic:
-                (all(rhs:[SafeUsize, SafeU32, usize, u32]))
-        ]
-        [
-            conversion_maps:
-                (from(source: usize) { SafeUsize(source.into()) } )
-                ( [omit_extras] safe into(SafeUsize) { safe })
-                ( [omit_extras] from(other: SafeUsize) { other })
-                (from(source: Option<usize>) { SafeUsize(source) })
-                (safe into(Option<f64>) { safe.inner().map(|u| u.try_into().ok() )})
-                (safe into(Option<u32>) { safe.inner().map(|u| u.try_into().ok() )})
-                (from(source: Option<f64>) { source.map(|f| <f64 as TryInto<usize>>::try_into(f.round()).ok().into_safe_usize() ) })
-                (safe into(Option<Duration>) { safe.inner().map(|u| Duration::from_secs(u as u64)) } )
-                (from (source: SafeU32) { source.into_safe_usize() } )
-        ]
-      )
-      (
-        [ type_def: simple_safe_struct(SafeU32(u32))]
-        [ impl_safe:
-            impl_simple_safe_data(
-                [zero: 0_u32.into_safe_usize(), none: Self(None)]
-                [default: Self::zero() ]
-            )
-        ]
-        [
-            safe_arithmetic:
-                (all(rhs:[SafeUsize, SafeU32, usize, u32]))
-        ]
-        [
-            conversion_maps:
-                (from(source: u32) { SafeU32(source.into()) } )
-                (from(source: Option<u32>) { SafeU32(source) })
-                (safe into(Option<f64>) { safe.inner().map(|u| u.try_into().ok())})
-                (safe into(Option<usize>) { safe.inner().map(|u| u.try_into().ok() )})
-                (from(source: Option<f64>) { source.map(|f| <f64 as TryInto<u32>>::try_into(f.round()).ok().into_safe_usize() ) })
-                (safe into(Option<Duration>) { safe.inner().map(|u| Duration::from_secs(u as u64)) } )
-                (safe into(SafeF64) { safe.into_opt_f64().into_safe() } )
-                (safe into(SafeUsize) { safe.into_opt_usize().into_safe() })
-        ]
-      )
-);
-
-trait SafePartialEq<Other>
-where
-    Self: SimpleSafeData + FromSource<Other>,
-{
-    fn eq(&self, other: &Other);
-}
-
-impl<Safe, Other> SafePartialEq<Other> for Safe
-where
-    Safe: SimpleSafeData + FromSource<Other>,
-{
-    fn eq(&self, other: &Other) -> bool {
-        self.inner()
-            .partial_cmp(&<Safe as FromSource<Other>>::from_source(other))
-            .map(|ordering| ordering == Ordering::Equal)
-            .unwrap_or(false)
-    }
-}
-
-trait SafePartialOrd<Other>
-where
-    Self: SimpleSafeData + FromSource<Other>,
-{
-    fn ord(&self, other: &Other) -> Option<Ordering>;
-}
-
-impl<Safe, Other> SafePartialOrd<Other> for Safe
-where
-    Safe: SimpleSafeData + FromSource<Other>,
-{
-    fn ord(&self, other: &Other) -> Option<Ordering> {
-        self.inner()
-            .partial_cmp(&<Safe as FromSource<Other>>::from_source(other))
-    }
-}
-
-trait SafeEq<Other>
-where
-    Self: SimpleSafeData + FromSource<Other>,
-{
-}
-
-impl<Safe, Other> SafeEq<Other> for Safe where Safe: SimpleSafeData + FromSource<Other> {}
-
-trait SafeOrd<Other>
-where
-    Self: SimpleSafeData + FromSource<Other>,
-{
-    fn cmp(&self, other: &Other) -> Ordering {
-        self.partial_cmp(other).unwrap_or(Ordering::Less)
-    }
-}
-
-impl<Safe, Other> SafeOrd<Other> for Safe where Safe: SimpleSafeData + FromSource<Other> {}
-
-impl Div<usize> for SafeDuration {
-    type Output = SafeDuration;
-
-    fn div(self, rhs: usize) -> Self::Output {
-        let safe_f64: SafeF64 = self.into_target();
-        (safe_f64 / rhs).into_target()
-    }
-}
-
-impl Div<usize> for SafeUsize {
-    type Output = SafeUsize;
-    fn div(self, rhs: usize) -> Self::Output {
-        (self.into_safe_f64() / rhs)
-            .inner()
-            .map(|f| f.round())
-            .into_safe()
-    }
-}
-
-impl Display for SafeF64 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let output = match self {
-            SafeF64(Some(x)) => format!("{}", x),
-            _ => "None".into(),
-        };
-        write!(f, "{}", output)
-    }
-}
-
-impl LowerExp for SafeF64 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let output = match self {
-            SafeF64(Some(x)) => format!("{:e}", x),
-            _ => "None".into(),
-        };
-        write!(f, "{}", output)
-    }
-}
-
-impl Sum for SafeF64 {
-    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        SafeF64(iter.filter_map(|s| s.0).sum::<f64>().into())
-    }
+trait IntoF64 {
+    fn into_f64(&self) -> Result<f64, String>;
 }
 
 trait RoundSigFigs
 where
-    Self: Copy + Clone + SafeInto<SafeF64>,
+    Self: Copy + Clone,
 {
-    fn delta_shift(x: SafeF64) -> Option<i32> {
-        x.0.map(|f| f.abs().log10().ceil() as i32)
+    fn from_f64(f: f64) -> Result<Self, String>;
+    fn into_f64(self) -> Result<f64, String>;
+
+    fn delta(x: f64) -> Option<i32> {
+        let f = x.abs().log10().ceil();
+        f.is_finite().then_some(f as i32)
     }
 
-    fn round_sig_figs(&self, n_sig_figs: i32) -> Option<String> {
-        let x = self.into_target();
-        let rounded: SafeF64 = if x == 0. || n_sig_figs == 0 {
-            (0.0_f64).into_safe()
-        } else if let Some(delta_shift) = Self::delta_shift(x) {
-            let shift = n_sig_figs - delta_shift;
-            let shift_factor = 10_f64.powi(shift).into_safe();
-            SafeF64::from_source((x * shift_factor).inner().map(f64::round)) / shift_factor
+    fn round_sig_figs(&self, n_sig_figs: i32) -> Self {
+        let x: f64 = self.into_f64().unwrap();
+        Self::from_f64(if x == 0. || n_sig_figs == 0 {
+            0.0_f64
         } else {
-            SafeF64(None)
-        };
-
-        rounded.inner().map(|r| format!("{:e}", r))
+            if let Some(delta) = Self::delta(x) {
+                let shift = n_sig_figs - delta;
+                let shift_factor = 10_f64.powi(shift);
+                (x * shift_factor).round() / shift_factor
+            } else {
+                0.0_f64
+            }
+        })
+        .unwrap()
     }
 }
 
-impl RoundSigFigs for SafeF64 {}
-impl RoundSigFigs for SafeDuration {}
+impl RoundSigFigs for f64 {
+    fn from_f64(f: f64) -> Result<Self, String> {
+        Ok(f)
+    }
+
+    fn into_f64(self) -> Result<f64, String> {
+        Ok(self)
+    }
+}
+
+impl RoundSigFigs for Duration {
+    fn from_f64(f: f64) -> Result<Self, String> {
+        if f.is_finite() && f.is_sign_positive() {
+            Ok(Duration::from_secs_f64(f))
+        } else {
+            Err(format!(
+                "Cannot convert {f} into a Duration (not-finite, and/or negative)"
+            ))
+        }
+    }
+
+    fn into_f64(self) -> Result<f64, String> {
+        Ok(self.as_secs_f64())
+    }
+}
+
+impl RoundSigFigs for usize {
+    fn from_f64(f: f64) -> Result<Self, String> {
+        if f.is_finite() && f.is_sign_positive() {
+            Ok(f.round() as usize)
+        } else {
+            Err(format!(
+                "Cannot convert {f} into a usize (not-finite, and/or negative)"
+            ))
+        }
+    }
+
+    fn into_f64(self) -> Result<f64, String> {
+        Ok(self as f64)
+    }
+}
 
 #[derive(PartialEq, Eq, Copy, Clone)]
 enum Status {
@@ -762,101 +170,243 @@ impl Printer {
 }
 
 #[derive(Debug, Clone)]
-struct HistoryVec<
-    Safe: Default
-        + Clone
-        + SimpleSafeData
-        + FromSource<Data>
-        + SafeSub<Safe, Output = Safe>
-        + SafeAdd<Safe, Output = Safe>
-        + SafeDiv<usize, Output = Safe>,
-    Data: Default + Clone + Add<Data, Output = Data> + Sub<Data, Output = Data>,
-> {
+struct HistoryVec<Data>
+where
+    Data: Default + Clone + Copy + Averageable,
+{
     capacity: usize,
     inner: Vec<Data>,
     // current_sum: T,
-    average: Safe,
+    average: Data,
 }
 
-impl<
-        Safe: Default
-            + Clone
-            + SimpleSafeData
-            + FromSource<Data>
-            + SafeSub<Safe, Output = Safe>
-            + SafeAdd<Safe, Output = Safe>
-            + SafeDiv<usize, Output = Safe>,
-        Data: Default + Clone + Add<Data, Output = Data> + Sub<Data, Output = Data>,
-    > Default for HistoryVec<Safe, Data>
+impl<Data> Default for HistoryVec<Data>
+where
+    Data: Default + Clone + Copy + Averageable + Debug,
 {
     fn default() -> Self {
         HistoryVec {
             capacity: MAX_HISTORY,
             inner: Vec::with_capacity(MAX_HISTORY),
-            average: Safe::zero(),
+            average: Data::default(),
         }
     }
 }
 
-impl<
-        Safe: Default
-            + Clone
-            + SimpleSafeData
-            + FromSource<Data>
-            + SafeSub<Safe, Output = Safe>
-            + SafeAdd<Safe, Output = Safe>
-            + SafeDiv<usize, Output = Safe>,
-        Data: Default + Clone + Add<Data, Output = Data> + Sub<Data, Output = Data>,
-    > HistoryVec<Safe, Data>
+trait Averageable
+where
+    Self: Sized + Clone + Copy,
 {
-    fn push(&mut self, k: Data) {
-        // We want to find a number kx such that kx + curr_avg is the new,
+    type Intermediate;
+    fn sub_then_div(&self, sub_rhs: Self, div_rhs: usize) -> Self::Intermediate;
+
+    fn add_delta(&self, delta: Self::Intermediate) -> Self;
+
+    fn increment_existing_avg(
+        self,
+        existing_avg: Self,
+        popped: Option<Self>,
+        new_n: usize,
+    ) -> Self {
+        // We want to find a number delta such that delta + existing_avg is the new,
         // updated average.
-        let kx: Safe = if self.inner.len() == self.capacity {
-            let k_prime = self.inner.pop().unwrap();
-            //     incremental update of average
-            //     (q + k_prime)/n  +  kx          = (q + k)/n
-            // ==  (q + k_prime)/n  -  (q + k)/n   = -kx
-            // ==  (q + k_prime)/n  -  (q + k)/n   = -kx
-            // ==  (k_prime - k)/n                 = -kx
-            // ==  (k - k_prime)/n                 =  kx
-            // current_average + kx = (current_sum - k_prime + k)/len
-            let delta_k: Safe = Safe::from_source(k) - Safe::from_source(k_prime);
-            delta_k / self.inner.len()
+
+        // suppose we have hit the maximum capacity in our history vector
+        // therefore, we will be popping out the last element (`popped`) and then
+        // adding `self` to the history vec. Let `q` be the sum of all the
+        // elements in the history vector apart from the popped one.
+        // So, in this case:
+        //     (q + popped)/n  +  delta          = (q + self)/n
+        // ==  (q + popped)/n  -  (q + self)/n   = -delta
+        // ==  (q + popped)/n  -  (q + self)/n   = -delta
+        // ==  (popped - self)/n                 = -delta
+        // ==  (self - popped)/n                 =  delta
+        // current_average + delta = (current_sum - popped + self)/len
+        // which implies that
+        //
+        // In the case where we have not yet reached the maximum capacity of our
+        // history vector, we will be appending self to the list without changing.
+        // So the increment `delta` should be the solution to:
+        //     q/(n - 1)  +  delta = (q + self)/n
+        //
+        // Instead of solving this directly, note that we have a list of (n - 1)
+        // numbers, with average q/(n - 1). To this list, can we add another number
+        // (the nth number), such that the new average is still q/(n - 1)?
+        // Yes! We know (intuitively) that if we add a new number which is
+        // exactly the existing average, then the existing average will not shift:
+        //    (q + (q/n - 1))/n
+        // == ((n - 1)q + q) / n(n - 1)
+        // == (qn - q + q)/n(n - 1)
+        // == qn / (n(n-1))
+        // == q/(n - 1)
+        //
+        // Going back to our problem of interest, suppose that we have (n - 1)
+        // numbers, and we would like to add another number to it that leaves
+        // the average unchanged. We know that this number is existing_avg. Now
+        // we have a list of n numbers, where the last number is existing_avg.
+        // So, following what we derived in the last section: let
+        // popped == existing_avg
+        //
+        // Then, the new average should be: (self - popped)/n
+        // Now we have a list of n numbers, with the average q/(n - 1),
+        // and we can use the formula derived for the preceding if statement
+        // as follows to get that the increment should be (self - existing_avg)/n:
+        //     (self - existing_avg)/n + existing_avg
+        // ==  (self - existing_avg + n*existing_avg)/n
+        // ==  (self + existing_avg * (n - 1))/n
+        // ==  (self + q)/n
+        // Intriguingly, this formula also works for the case (n - 1) == 0
+        let popped = popped.unwrap_or(existing_avg);
+        let delta = self.sub_then_div(popped, new_n);
+        existing_avg.add_delta(delta)
+    }
+}
+
+impl Averageable for Duration {
+    type Intermediate = f64;
+    fn sub_then_div(&self, sub_rhs: Duration, div_rhs: usize) -> Self::Intermediate {
+        if div_rhs > 0 {
+            let r = (self.as_secs_f64() - sub_rhs.as_secs_f64()) / (div_rhs as f64);
+            if !r.is_finite() {
+                panic!("result of subtracting ({self:?} - {sub_rhs:?})/{div_rhs} is not finite")
+            }
+            r
         } else {
-            //     incremental update of average
-            //     q/(n - 1)  +  kx = (q + k)/n
-            //
-            // We have a list of (n - 1) numbers, with average q/(n - 1). To this list,
-            // can we add another number (the nth number), such that the new average is
-            // still q/(n - 1)? Well, we know that if this new number *is* q/(n - 1),
-            // then the average will remain unchanged:
-            //
-            //    (q + (q/n - 1))/n
-            // == ((n - 1)q + q) / n(n - 1)
-            // == (qn - q + q)/n(n - 1)
-            // == qn / (n(n-1))
-            // == q/(n - 1)
-            //
-            // Now we have a list of n numbers, with the average q/(n - 1),
-            // and we can use the formula derived for the preceding if statement
-            // as follows to get that the increment should be (k - curr_avg)/n:
-            //     (k - curr_avg)/n + curr_avg
-            // ==  (k - curr_avg + n*curr_avg)/n
-            // ==  (k + curr_avg * (n - 1))/n
-            // ==  (k + q)/n
-            let n = self.inner.len() + 1;
-            // Intriguingly, this formula also works for the case where self.inner.len() == 0
-            (Safe::from_source(k) - self.average) / n
-        };
-        self.average = self.average + kx.into();
-        self.inner.push(k);
+            panic!("cannot divide by 0!");
+        }
+    }
+    fn add_delta(&self, delta: Self::Intermediate) -> Self {
+        let r = self.as_secs_f64() + delta;
+        if r.is_sign_positive() {
+            Duration::from_secs_f64(r)
+        } else {
+            panic!("cannot perform {self:?} + {delta:?}");
+        }
     }
 
-    fn maybe_push(&mut self, k: Option<Data>) {
-        if let Some(k) = k {
-            self.push(k);
+    // fn unitless_mul(&self, rhs: usize) -> Self {
+    //     self.checked_mul(rhs.try_into().unwrap()).unwrap()
+    // }
+
+    // fn unitless_div(self, rhs: usize) -> Self {
+    //     self.checked_div(rhs.try_into().unwrap()).unwrap()
+    // }
+
+    // fn from_sub_out(x: Self::SubOut) -> Self {
+    //     Duration::from_secs_f64(x)
+    // }
+}
+
+impl Averageable for usize {
+    type Intermediate = i64;
+    fn sub_then_div(&self, sub_rhs: usize, div_rhs: usize) -> Self::Intermediate {
+        if div_rhs > 0 {
+            ((if *self < sub_rhs {
+                ((sub_rhs - self) as i64) * -1
+            } else {
+                (self - sub_rhs) as i64
+            }) as f64
+                / (div_rhs as f64))
+                .round() as i64
+        } else {
+            panic!("cannot divide by 0!");
         }
+    }
+
+    fn add_delta(&self, delta: Self::Intermediate) -> Self {
+        let r = (*self as i64) + delta;
+        if r < 0 {
+            panic!("result of adding {delta} to {self} is negative!")
+        } else {
+            r as usize
+        }
+    }
+
+    // fn unitless_mul(&self, rhs: usize) -> Self {
+    //     self * rhs
+    // }
+
+    // fn unitless_div(self, rhs: usize) -> Self {
+    //     ((self as f64) / (rhs as f64)).round() as usize
+    // }
+
+    // fn from_sub_out(x: Self::SubOut) -> Self {
+    //     if x < 0 {
+    //         panic!("Cannot convert {x} into usize");
+    //     } else {
+    //         x as usize
+    //     }
+    // }
+}
+
+impl Averageable for f64 {
+    type Intermediate = f64;
+    fn sub_then_div(&self, sub_rhs: f64, div_rhs: usize) -> Self::Intermediate {
+        if div_rhs > 0 {
+            (self - sub_rhs) / (div_rhs as f64)
+        } else {
+            panic!("cannot divide by 0!");
+        }
+    }
+
+    fn add_delta(&self, delta: Self::Intermediate) -> Self {
+        self + (delta as Self::Intermediate)
+    }
+
+    // fn unitless_mul(&self, rhs: usize) -> Self {
+    //     self * (rhs as f64)
+    // }
+
+    // fn unitless_div(self, rhs: usize) -> Self {
+    //     self / (rhs as f64)
+    // }
+
+    // fn from_sub_out(x: Self::SubOut) -> Self {
+    //     x
+    // }
+}
+
+trait SimpleAverageable {
+    fn unitless_div(self, rhs: usize) -> Self;
+}
+
+impl SimpleAverageable for Duration {
+    fn unitless_div(self, rhs: usize) -> Self {
+        self.checked_div(rhs.try_into().unwrap()).unwrap()
+    }
+}
+
+impl SimpleAverageable for usize {
+    fn unitless_div(self, rhs: usize) -> Self {
+        ((self as f64) / (rhs as f64)).round() as usize
+    }
+}
+
+impl SimpleAverageable for f64 {
+    fn unitless_div(self, rhs: usize) -> Self {
+        self / (rhs as f64)
+    }
+}
+
+impl<Data> HistoryVec<Data>
+where
+    Data: Default + Clone + Copy + Averageable + Debug + Add<Data> + Sum<Data> + SimpleAverageable,
+{
+    fn push(&mut self, k: Data) {
+        // self.average = if self.inner.len() == self.capacity {
+        //     k.increment_existing_avg(
+        //         self.average,
+        //         self.inner.pop().unwrap().into(),
+        //         self.inner.len(),
+        //     )
+        // } else {
+        //     k.increment_existing_avg(self.average, None, self.inner.len() + 1)
+        // };
+        if self.inner.len() == self.capacity {
+            self.inner.pop();
+        }
+        self.inner.push(k);
+        self.average = (self.inner.iter().copied().sum::<Data>()).unitless_div(self.inner.len());
     }
 
     fn last(&self) -> Data {
@@ -933,10 +483,6 @@ impl<T> From<SendError<T>> for WorkError {
     }
 }
 
-// struct WorkRequest {
-//     size: usize,
-// }
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd, Eq, Ord)]
 struct TimeStamp(Option<Instant>);
 
@@ -945,21 +491,21 @@ impl TimeStamp {
     fn mark(&mut self) {
         self.0.replace(Instant::now());
     }
-}
 
-impl Sub<TimeStamp> for TimeStamp {
-    type Output = Option<Duration>;
-    fn sub(self, rhs: TimeStamp) -> Self::Output {
-        self.0.and_then(|t1| rhs.0.and_then(|t0| (t1 - t0).into()))
+    fn elapsed(&self) -> Option<Duration> {
+        self.0.map(|instant| instant.elapsed())
+    }
+
+    fn maybe_instant(&self) -> Option<Instant> {
+        self.0.into()
     }
 }
 
 #[derive(Clone, Debug)]
 struct WorkResults {
-    history_count: usize,
-    avg_task_time: SafeF64,
-    avg_idle_time: SafeF64,
-    avg_processing_rate: SafeF64,
+    avg_task_time: Duration,
+    avg_idle_time: Duration,
+    avg_processing_rate: f64,
     dirs_processed: usize,
     max_dir_size: usize,
     discovered: Vec<PathBuf>,
@@ -968,10 +514,9 @@ struct WorkResults {
 impl Default for WorkResults {
     fn default() -> Self {
         WorkResults {
-            history_count: 0,
-            avg_task_time: SafeF64::zero(),
-            avg_idle_time: SafeF64::zero(),
-            avg_processing_rate: SafeF64::zero(),
+            avg_task_time: Duration::ZERO,
+            avg_idle_time: Duration::ZERO,
+            avg_processing_rate: 0.0,
             dirs_processed: 0,
             max_dir_size: 0,
             discovered: Vec::new(),
@@ -1003,116 +548,38 @@ struct ResultsBuffer {
     discovered: Vec<PathBuf>,
 }
 
-struct TaskHistory {
-    time_taken: SafeDuration,
-    idle_time: SafeDuration,
-    dirs_processed: SafeUsize,
-    processing_rate: SafeF64,
-}
-
-impl Add<TaskHistory> for TaskHistory {
-    type Output = TaskHistory;
-    fn add(self, rhs: TaskHistory) -> Self::Output {
-        TaskHistory {
-            time_taken: self.time_taken.safe_add(rhs.time_taken),
-            idle_time: self.idle_time + rhs.idle_time,
-            dirs_processed: self.dirs_processed + rhs.dirs_processed,
-            processing_rate: self.processing_rate + rhs.processing_rate,
-        }
-    }
-}
-
-impl Sub<TaskHistory> for TaskHistory {
-    type Output = TaskHistory;
-    fn sub(self, rhs: TaskHistory) -> Self::Output {
-        TaskHistory {
-            time_taken: self.time_taken - rhs.time_taken,
-            idle_time: self.idle_time - rhs.idle_time,
-            dirs_processed: self.dirs_processed - rhs.dirs_processed,
-            processing_rate: self.processing_rate - rhs.processing_rate,
-        }
-    }
-}
-
-impl Div<usize> for TaskHistory {
-    type Output = SafeTaskHistory;
-    fn div(self, rhs: usize) -> Self::Output {
-        SafeTaskHistory {
-            time_taken: (self.time_taken.into_safe_duration()) / rhs,
-            idle_time: (self.idle_time.into_safe_duration()) / rhs,
-            dirs_processed: (self.dirs_processed.into_safe_usize()) / rhs,
-            processing_rate: (self.processing_rate.into_safe_f64()) / rhs,
-        }
-    }
-}
-
-impl Add<SafeTaskHistory> for SafeTaskHistory {
-    type Output = SafeTaskHistory;
-    fn add(self, rhs: SafeTaskHistory) -> Self::Output {
-        SafeTaskHistory {
-            time_taken: self.time_taken + rhs.time_taken,
-            idle_time: self.idle_time + rhs.idle_time,
-            dirs_processed: self.dirs_processed + rhs.dirs_processed,
-            processing_rate: self.processing_rate + rhs.processing_rate,
-        }
-    }
-}
-
-impl Sub<SafeTaskHistory> for SafeTaskHistory {
-    type Output = SafeTaskHistory;
-    fn sub(self, rhs: TaskHistory) -> Self::Output {
-        SafeTaskHistory {
-            time_taken: self.time_taken - rhs.time_taken,
-            idle_time: self.idle_time - rhs.idle_time,
-            dirs_processed: self.dirs_processed - rhs.dirs_processed,
-            processing_rate: self.processing_rate - rhs.processing_rate,
-        }
-    }
-}
-
-impl Div<usize> for SafeTaskHistory {
-    type Output = SafeTaskHistory;
-    fn div(self, rhs: usize) -> Self::Output {
-        SafeTaskHistory {
-            time_taken: self.time_taken / rhs,
-            idle_time: self.idle_time / rhs,
-            dirs_processed: self.dirs_processed / rhs,
-            processing_rate: self.processing_rate / rhs,
-        }
-    }
-}
-
 #[derive(Default)]
 struct ThreadHistory {
-    historical_data: HistoryVec<SafeTaskHistory, TaskHistory>,
-    current: TaskHistory,
-    t_started: TimeStamp,
+    task_times: HistoryVec<Duration>,
+    idle_times: HistoryVec<Duration>,
+    post_task_times: HistoryVec<Duration>,
+    dirs_processed: HistoryVec<usize>,
+    processing_rates: HistoryVec<f64>,
+    t_task_started: TimeStamp,
+    t_began_idling: TimeStamp,
     t_finished: TimeStamp,
-    t_idling: TimeStamp,
 }
 
 impl ThreadHistory {
-    fn mark_idling(&mut self) {
-        self.t_idling.mark();
+    fn mark_began_idling(&mut self) {
+        if let Some(finished_instant) = self.t_finished.maybe_instant() {
+            self.post_task_times.push(finished_instant.elapsed());
+        }
+        self.t_began_idling.mark();
     }
 
     fn mark_started(&mut self) {
-        self.t_started.mark();
-        self.historical_data
-            .push_idle_time(self.t_started - self.t_idling);
+        self.idle_times.push(self.t_began_idling.elapsed().expect("if we are marking a task start, then we must have marked the time when we began idling"));
+        self.t_task_started.mark();
     }
 
     fn mark_finished(&mut self, dirs_processed: usize) {
-        self.t_finished.mark();
-        self.task_times.maybe_push(self.t_finished - self.t_started);
+        self.task_times.push(self.t_task_started.elapsed().expect(
+            "if we are marking a task finish time, then we must have marked time since we started",
+        ));
         self.dirs_processed.push(dirs_processed);
         self.processing_rates
-            .push(dirs_processed.into() / self.task_times.last().into());
-        self.mark_idling();
-    }
-
-    fn count(&self) -> usize {
-        self.history.len()
+            .push((dirs_processed as f64) / self.task_times.last().as_secs_f64());
     }
 }
 
@@ -1136,9 +603,9 @@ struct ThreadHandle {
     in_flight: usize,
     orders: Vec<PathBuf>,
     dirs_processed: usize,
-    avg_task_time: SafeF64,
-    avg_idle_time: SafeF64,
-    avg_processing_rate: SafeF64,
+    avg_task_time: Duration,
+    avg_idle_time: Duration,
+    avg_processing_rate: f64,
 }
 
 struct Executor {
@@ -1149,9 +616,10 @@ struct Executor {
     last_status_print: Option<Instant>,
     start_time: Instant,
     processed: usize,
+    total_submitted: Vec<usize>,
     orders_submitted: usize,
     loop_sleep_time: Duration,
-    loop_sleep_time_history: HistoryVec<SafeDuration, Duration>,
+    loop_sleep_time_history: HistoryVec<Duration>,
 }
 
 impl Thread {
@@ -1177,12 +645,11 @@ impl Thread {
     }
 
     fn start(mut self) {
-        // Just the initial idling mark to get us started, otherwise,
-        // `history.mark_finished` handles calling mark_idling for us.
-        self.history.mark_idling();
+        // self.history.mark_began_idling();
         loop {
             self.printer.flush_send().unwrap();
 
+            self.history.mark_began_idling();
             let work_order = self.comms.order_receiver.recv().unwrap();
 
             self.history.mark_started();
@@ -1214,7 +681,6 @@ impl Thread {
             self.comms
                 .result_sender
                 .send(WorkResults {
-                    history_count: self.history.count(),
                     avg_task_time: self.history.task_times.average,
                     avg_idle_time: self.history.idle_times.average,
                     max_dir_size: self.results_buffer.max_dir_size,
@@ -1239,53 +705,58 @@ impl ThreadHandle {
             worker_thread: thread::spawn(move || worker.start()),
             in_flight: 0,
             dirs_processed: 0,
-            avg_task_time: SafeF64::default(),
-            avg_idle_time: SafeF64::default(),
-            avg_processing_rate: SafeF64::default(),
+            avg_task_time: Duration::ZERO,
+            avg_idle_time: Duration::ZERO,
+            avg_processing_rate: f64::default(),
             orders: vec![],
         }
     }
 
-    fn get_avg_task_time(&self) -> SafeF64 {
+    fn get_avg_task_time(&self) -> Duration {
         self.avg_task_time
     }
 
-    fn get_avg_idle_time(&self) -> SafeF64 {
+    fn get_avg_idle_time(&self) -> Duration {
         self.avg_idle_time
     }
 
-    fn get_avg_processing_rate(&self) -> SafeF64 {
+    fn get_avg_processing_rate(&self) -> f64 {
         self.avg_processing_rate
     }
 
-    fn drain_orders(&mut self) -> Vec<PathBuf> {
-        let order: Vec<PathBuf> = self.orders.drain(0..).collect();
-        self.in_flight += order.len();
-        order
-    }
+    // fn drain_orders(&mut self) -> Vec<PathBuf> {
+    //     let order: Vec<PathBuf> = self.orders.drain(0..).collect();
+    //     self.in_flight += order.len();
+    //     order
+    // }
 
-    fn queue_orders(&mut self, orders: Vec<PathBuf>) {
-        self.orders.extend(orders.into_iter());
-    }
+    // fn queue_orders(&mut self, orders: Vec<PathBuf>) {
+    //     self.orders.extend(orders.into_iter());
+    // }
 
     fn dispatch_orders(&mut self, orders: Vec<PathBuf>) -> Result<(), WorkError> {
-        if self.is_idle() {
-            self.in_flight += orders.len();
-            self.comms.order_sender.send(orders)?;
-            let drained_orders = self.drain_orders();
-            self.comms.order_sender.send(drained_orders)?;
-        } else {
-            self.queue_orders(orders);
-        }
+        // if self.is_idle() {
+        //     self.in_flight += orders.len();
+        //     self.comms.order_sender.send(orders)?;
+        //     let drained_orders = self.drain_orders();
+        //     self.comms.order_sender.send(drained_orders)?;
+        // } else {
+        //     self.queue_orders(orders);
+        // }
+        self.in_flight += orders.len();
+        self.comms.order_sender.send(orders)?;
+        // let drained_orders = self.drain_orders();
+        // self.comms.order_sender.send(drained_orders)?;
         Ok(())
     }
 
     fn push_orders(&mut self, orders: Vec<PathBuf>) -> Result<(), WorkError> {
-        if self.is_idle() {
-            self.dispatch_orders(orders)?;
-        } else {
-            self.queue_orders(orders);
-        }
+        self.dispatch_orders(orders)?;
+        // if self.is_idle() {
+        //     self.dispatch_orders(orders)?;
+        // } else {
+        //     self.queue_orders(orders);
+        // }
         Ok(())
     }
 
@@ -1294,22 +765,25 @@ impl ThreadHandle {
         self.in_flight -= dirs_processed;
     }
 
-    fn drain_results(&mut self) -> (usize, Vec<PathBuf>) {
-        let WorkResults {
-            avg_task_time,
-            avg_idle_time,
-            avg_processing_rate,
-            dirs_processed,
-            max_dir_size,
-            discovered,
-            history_count,
-        } = self.comms.result_receiver.try_iter().sum::<WorkResults>();
-
-        self.avg_task_time = avg_task_time;
-        self.avg_idle_time = avg_idle_time;
-        self.avg_processing_rate = avg_processing_rate;
-        self.update_dirs_processed(dirs_processed);
-        (max_dir_size, discovered)
+    fn drain_results(&mut self) -> Option<(usize, Vec<PathBuf>)> {
+        let results: Vec<WorkResults> = self.comms.result_receiver.try_iter().collect();
+        if results.len() > 0 {
+            let WorkResults {
+                avg_task_time,
+                avg_idle_time,
+                avg_processing_rate,
+                dirs_processed,
+                max_dir_size,
+                discovered,
+            } = results.into_iter().sum();
+            self.avg_task_time = avg_task_time;
+            self.avg_idle_time = avg_idle_time;
+            self.avg_processing_rate = avg_processing_rate;
+            self.update_dirs_processed(dirs_processed);
+            Some((max_dir_size, discovered))
+        } else {
+            None
+        }
     }
 
     fn currently_submitted(&self) -> usize {
@@ -1335,6 +809,71 @@ impl ThreadHandle {
     }
 }
 
+trait CustomDisplay {
+    fn custom_display(&self) -> String;
+}
+
+impl CustomDisplay for f64 {
+    fn custom_display(&self) -> String {
+        format!("{:e}", self.round_sig_figs(6))
+    }
+}
+
+impl CustomDisplay for Duration {
+    fn custom_display(&self) -> String {
+        format!("{self:?}")
+    }
+}
+
+impl CustomDisplay for usize {
+    fn custom_display(&self) -> String {
+        format!("{self}")
+    }
+}
+
+// fn task_time_score(avg_task: f64, max_avg_task_time: f64) -> f64 {
+//     1.0 - (avg_task / max_avg_task_time)
+// }
+
+// fn idle_time_score(avg_idle: f64, max_avg_idle_time: f64) -> f64 {
+//     avg_idle / max_avg_idle_time
+// }
+
+// // fn in_flight_penalty(in_flight: usize) -> f64 {
+// //     (1.0 - (in_flight as f64 / MAX_IN_FLIGHT as f64))
+// //         .min(0.0)
+// //         .max(1.0)
+// // }
+
+// fn processing_rate_score(processing_rate: f64, max_processing_rate: f64) -> f64 {
+//     processing_rate / max_processing_rate
+// }
+
+trait FindMaxMin
+where
+    Self: IntoIterator + Sized,
+    <Self as IntoIterator>::Item: PartialOrd + Copy,
+{
+    fn find_max(
+        self,
+        default_for_max: <Self as IntoIterator>::Item,
+    ) -> <Self as IntoIterator>::Item {
+        self.into_iter()
+            .max_by(|p, q| p.partial_cmp(q).unwrap_or(Ordering::Less))
+            .unwrap_or(default_for_max)
+    }
+    fn find_min(
+        self,
+        default_for_min: <Self as IntoIterator>::Item,
+    ) -> <Self as IntoIterator>::Item {
+        self.into_iter()
+            .min_by(|p, q| p.partial_cmp(q).unwrap_or(Ordering::Less))
+            .unwrap_or(default_for_min)
+    }
+}
+
+impl<'a, T> FindMaxMin for &'a Vec<T> where T: PartialOrd + Copy {}
+
 impl Executor {
     fn new(work: Vec<PathBuf>, verbose: bool) -> Self {
         let (print_sender, print_receiver) = if verbose {
@@ -1357,6 +896,7 @@ impl Executor {
             start_time: Instant::now(),
             processed: 0,
             orders_submitted: 0,
+            total_submitted: vec![0; NUM_THREADS],
             loop_sleep_time: DEFAULT_EXECUTE_LOOP_SLEEP,
             loop_sleep_time_history: HistoryVec::default(),
         }
@@ -1366,36 +906,140 @@ impl Executor {
         self.handles.iter_mut().all(ThreadHandle::is_idle)
     }
 
+    fn fetch_stats<T>(&self, f: fn(&ThreadHandle) -> T) -> Vec<T>
+    where
+        T: PartialOrd + Copy + Default,
+    {
+        self.handles.iter().map(f).collect()
+    }
+
+    fn fetch_stats_and_max<'a, T>(
+        &self,
+        f: fn(&ThreadHandle) -> T,
+        default_for_max: T,
+    ) -> (Vec<T>, T)
+    where
+        T: PartialOrd + Copy + Default,
+    {
+        let stats: Vec<T> = self.fetch_stats(f);
+        let max = stats.find_max(&default_for_max).clone();
+        (stats, max)
+    }
+
     fn distribute_work(&mut self) -> Result<(), WorkError> {
-        for handle in self.handles.iter_mut() {
-            if handle.is_idle() {
-                let will_submit = self.work_q.len().min(MAX_DISPATCH_SIZE);
-                handle.push_orders(self.work_q.drain(0..will_submit).collect())?;
-                self.orders_submitted += will_submit;
+        let (_, _) = self.fetch_stats_and_max(|h| h.avg_task_time.as_secs_f64(), 0.0);
+        let (idle_times, max_idle_time) =
+            self.fetch_stats_and_max(|h| h.avg_idle_time.as_secs_f64(), 0.0);
+        let (processing_rates, max_processing_rate) =
+            self.fetch_stats_and_max(|h| h.avg_processing_rate, 0.0);
+        let currently_submitted = self.fetch_stats(|h| h.currently_submitted());
+        let max_per_thread =
+            (self.work_q.len() as f64 / self.handles.len() as f64).floor() as usize;
+        let dispatch_sizes: Vec<usize> = if max_idle_time > 0.0 && max_processing_rate > 0.0 {
+            // bias distribution
+            // let ratings = task_times
+            //     .iter()
+            //     .zip(idle_times.iter())
+            //     .zip(processing_rates.iter())
+            //     .map(|((&task_time, &idle_time), _)| {
+            //         (max_task_time / max_idle_time).min(1.0)
+            //             * task_time_score(task_time, max_task_time)
+            //             + idle_time_score(idle_time, max_idle_time)
+            //     })
+            //     .collect::<Vec<f64>>();
+            // let normalizer: f64 = *ratings.find_max(&1.0);
+            // self.ratings = ratings.iter().map(|r| r / normalizer).collect();
+            // ratings
+            //     .into_iter()
+            //     .map(|r| (r / normalizer))
+            //     .zip(currently_submitted.iter())
+            //     .map(|(r, in_flight)| {
+            //         ((r * max_per_thread as f64).round() as usize)
+            //             .min(MAX_IN_FLIGHT - in_flight)
+            //     })
+            //     .collect()
+            let requested_dispatches: Vec<usize> = processing_rates
+                .iter()
+                .zip(idle_times.iter())
+                .zip(currently_submitted.iter())
+                .map(|((&processing_rate, &idle_time), &in_flight)| {
+                    let filled_idle_time = in_flight as f64 / processing_rate;
+                    let unfilled_idle_time = (idle_time > filled_idle_time)
+                        .then(|| idle_time - filled_idle_time)
+                        .unwrap_or(0.0);
+                    let would_like = ((processing_rate * unfilled_idle_time).round() as usize)
+                        .max(if in_flight == 0 { 1 } else { 0 });
+                    // let would_like = if would_like + in_flight > MAX_IN_FLIGHT {
+                    //     (would_like + in_flight) - MAX_IN_FLIGHT
+                    // } else {
+                    //     would_like
+                    // };
+                    would_like
+                })
+                .collect();
+            // println!(
+            //     "({}, {}) requested_dispatches: {requested_dispatches:?}",
+            //     processing_rates.len(),
+            //     idle_times.len()
+            // );
+            let max_dispatch_total = self.work_q.len().min(MAX_TOTAL_DISPATCH_SIZE);
+            if requested_dispatches.iter().sum::<usize>() > max_dispatch_total {
+                let max_dispatch_request = requested_dispatches
+                    .iter()
+                    .max()
+                    .copied()
+                    .unwrap_or(1_usize) as f64;
+                requested_dispatches
+                    .into_iter()
+                    .map(|x| {
+                        ((x as f64 / max_dispatch_request) * max_dispatch_total as f64).round()
+                            as usize
+                    })
+                    .collect()
+            } else {
+                requested_dispatches
             }
-        }
-        let mut avg_idle_times = self
-            .handles
-            .iter()
-            .map(|h| h.avg_idle_time)
-            .collect::<Vec<SafeF64>>();
-        avg_idle_times.sort_unstable_by(|p, q| p.partial_cmp(q).unwrap_or(Ordering::Less));
-        self.loop_sleep_time = (avg_idle_times.len() > 0)
-            .then_some(avg_idle_times[0] * 0.2_f64.into())
-            .and_then(|s| s.into_opt_duration())
-            .unwrap_or(DEFAULT_EXECUTE_LOOP_SLEEP);
+        } else {
+            // distribute equally
+            let max_per_thread = max_per_thread.max(1);
+            vec![max_per_thread; self.handles.len()]
+        };
+        // println!("dispatches: {dispatch_sizes:?}");
+        dispatch_sizes
+            .into_iter()
+            .zip(self.handles.iter_mut())
+            .zip(currently_submitted.iter())
+            .map(|((dispatch_size, handle), &_)| {
+                let final_dispatch_size = dispatch_size.min(self.work_q.len());
+                let orders: Vec<PathBuf> = self.work_q.drain(0..final_dispatch_size).collect();
+                let dispatch_size = orders.len();
+                if dispatch_size > 0 {
+                    handle.push_orders(orders).unwrap();
+                    self.orders_submitted += dispatch_size;
+                }
+                final_dispatch_size
+            })
+            .zip(self.total_submitted.iter_mut())
+            .for_each(|(final_dispatch, current_total)| {
+                *current_total = *current_total + final_dispatch
+            });
+        self.loop_sleep_time = Duration::from_secs_f64(
+            idle_times
+                .iter()
+                .min_by(|p, q| p.partial_cmp(q).unwrap_or(Ordering::Less))
+                .copied()
+                .map(|d| d / (5.0 * NUM_THREADS as f64))
+                .unwrap_or(DEFAULT_EXECUTE_LOOP_SLEEP.as_secs_f64()),
+        );
         self.loop_sleep_time_history.push(self.loop_sleep_time);
         sleep(self.loop_sleep_time);
         Ok(())
     }
 
-    fn print_handle_avg_info<
-        T: Clone + Copy + PartialOrd + Display + Sum + LowerExp + RoundSigFigs,
-    >(
+    fn print_handle_avg_info<T: Clone + Copy + PartialOrd + Sum + CustomDisplay>(
         &self,
         title: &'static str,
         avg_info_fetch: fn(&ThreadHandle) -> T,
-        n_sig_figs: i32,
         print_total: bool,
     ) {
         let avg_info: Vec<T> = self.handles.iter().map(avg_info_fetch).collect();
@@ -1408,21 +1052,17 @@ impl Executor {
         println!(
             "{} (max: {}, min: {}{}): {}",
             title,
-            sorted[sorted.len() - 1].round_sig_figs(n_sig_figs),
-            sorted[0].round_sig_figs(n_sig_figs),
+            sorted[sorted.len() - 1].custom_display(),
+            sorted[0].custom_display(),
             print_total
                 .then_some(format!(
                     ", total: {}",
-                    avg_info
-                        .iter()
-                        .copied()
-                        .sum::<T>()
-                        .round_sig_figs(n_sig_figs)
+                    avg_info.iter().copied().sum::<T>().custom_display()
                 ))
                 .unwrap_or("".into()),
             avg_info
                 .iter()
-                .map(|t| t.round_sig_figs(n_sig_figs))
+                .map(|t| t.custom_display())
                 .collect::<Vec<String>>()
                 .join(", ")
         );
@@ -1435,27 +1075,28 @@ impl Executor {
             .unwrap_or(true)
         {
             let now = Instant::now();
-            let run_time = now - self.start_time;
+            let run_time = self.start_time.elapsed();
             let minutes = run_time.as_secs() / 60;
             let seconds = run_time.as_secs() % 60;
 
             self.last_status_print = now.into();
             println!(
-                "{} directories visited. {} new orders submitted. {}/{} idle. Loop wait time: {:e}, Running for: {}:{}. Overall rate: {}",
+                "{} directories visited. {} new orders submitted. {}/{} idle. Loop wait time: {}, Running for: {}:{}. Overall rate: {}",
                 self.processed,
                 self.orders_submitted,
                 self.handles.iter_mut().filter_map(|p| p.is_idle().then_some(1)).sum::<usize>(),
                 self.handles.len(),
-                self.loop_sleep_time.as_secs_f64(),
+                self.loop_sleep_time.custom_display(),
                 minutes,
                 seconds,
                 ((self.processed as f64) / run_time.as_secs_f64()).round()
             );
+            println!("total_submitted_since_last: {:?}", self.total_submitted);
+            self.total_submitted = vec![0; NUM_THREADS];
 
             self.print_handle_avg_info(
                 "processing rates",
                 ThreadHandle::get_avg_processing_rate,
-                3,
                 true,
             );
 
@@ -1463,16 +1104,16 @@ impl Executor {
                 "sleep: {}",
                 self.loop_sleep_time_history
                     .iter()
-                    .map(|d| format!("{}", d.round_sig_figs(4)))
+                    .map(|d| format!("{}", d.custom_display()))
                     .collect::<Vec<String>>()
                     .join(", ")
             );
 
-            self.print_handle_avg_info("task times", ThreadHandle::get_avg_task_time, 4, true);
+            self.print_handle_avg_info("task times", ThreadHandle::get_avg_task_time, true);
 
-            self.print_handle_avg_info("idle times", ThreadHandle::get_avg_idle_time, 4, true);
+            self.print_handle_avg_info("idle times", ThreadHandle::get_avg_idle_time, true);
 
-            self.print_handle_avg_info("in flight", ThreadHandle::currently_submitted, 4, true);
+            self.print_handle_avg_info("in flight", ThreadHandle::currently_submitted, true);
 
             self.orders_submitted = 0;
         }
@@ -1493,15 +1134,18 @@ impl Executor {
     }
 
     fn process_results(&mut self) {
-        for (max_dir_size, discovered) in self.handles.iter_mut().map(|p| p.drain_results()) {
+        for (max_dir_size, discovered, dirs_processed) in self.handles.iter_mut().filter_map(|p| {
+            p.drain_results()
+                .map(|(max_dir_size, discovered)| (max_dir_size, discovered, p.dirs_processed))
+        }) {
             // println!("Got some new work!");
             if max_dir_size > self.max_dir_size {
                 self.max_dir_size = max_dir_size;
                 println!("Found a directory with {} entries.", self.max_dir_size);
             }
-            self.work_q.extend(discovered.into_iter())
+            self.work_q.extend(discovered.into_iter());
+            self.processed += dirs_processed;
         }
-        self.processed = self.handles.iter().map(|p| p.dirs_processed).sum();
     }
 
     fn execute(mut self) -> Result<usize, WorkError> {
@@ -1516,8 +1160,7 @@ impl Executor {
                 if self.work_q.len() > 0 {
                     self.distribute_work()?;
                 } else {
-                    let now = Instant::now();
-                    let run_time = now - self.start_time;
+                    let run_time = self.start_time.elapsed();
                     let minutes = run_time.as_secs() / 60;
                     let seconds = run_time.as_secs() % 60;
                     println!(
@@ -1545,6 +1188,5 @@ fn main() {
     let manager = Executor::new(vec!["C:\\".into(), "A:\\".into(), "B:\\".into()], false);
     let result = manager.execute().unwrap();
     println!("Final max dir entry count: {}", result);
-    let end = Instant::now();
-    println!("Took {} seconds.", (end - start).as_secs());
+    println!("Took {}.", start.elapsed().custom_display());
 }
