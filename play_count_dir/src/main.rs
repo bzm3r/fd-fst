@@ -2,14 +2,29 @@
 #![feature(trace_macros)]
 trace_macros!(true);
 
+#[macro_use]
+mod num_macros;
+mod adp_num;
+mod display;
+mod hist_defs;
+mod hist_num;
+mod history;
+mod num;
+mod num_check;
+mod num_conv;
+mod sig_figs;
+mod signed_num;
+
+use hist_defs::{ProcessingRate, TimeSpan};
+use hist_num::{HistData, HistoryNum};
+use history::{AvgInfoBundle, HistoryVec};
+use num_conv::IntoNum;
 use paste::paste;
 use std::cmp::Ordering;
 use std::error::Error;
-use std::fmt::Result as FmtRes;
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::fs::{read_dir, DirEntry};
 use std::io::Error as IoErr;
-use std::ops::{Add, Deref, Div, Mul, Sub};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, TryRecvError};
 use std::sync::mpsc::{Receiver, SendError, Sender};
@@ -17,204 +32,15 @@ use std::sync::{Arc, RwLock, RwLockReadGuard};
 use std::thread::JoinHandle;
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
-#[macro_use]
-mod macro_tools;
 
-const NUM_THREADS: usize = 8;
-const DEFAULT_EXECUTE_LOOP_SLEEP: Duration = Duration::from_micros(10);
-const UPDATE_PRINT_DELAY: Duration = Duration::from_secs(5);
-const DEFAULT_WORK_CHUNK_SIZE: usize = 64;
-// const MAX_TOTAL_SUBMISSION: usize = NUM_THREADS * 500;
-const MAX_HISTORY: usize = 10;
-// const MIN_TARGET_SIZE: usize = 1;
-// const MAX_DISPATCH_SIZE: usize = 2_usize.pow(6);
-// const MAX_TOTAL_DISPATCH_SIZE: usize = if (NUM_THREADS * 10_usize.pow(4)) < (6 * 10_usize.pow(4)) {
-//     ((NUM_THREADS * 10_usize.pow(4)) as f64 * 1e-2) as usize
-// } else {
-//     ((NUM_THREADS * 10_usize.pow(4)) as f64 * 1e-2) as usize
-//     //((6 * 10_usize.pow(4)) as f64 * 1e-2) as usize
-// };
-// const MAX_IN_FLIGHT: usize = MAX_DISPATCH_SIZE * 2_usize.pow(10);
-// const PESSIMISTIC_PROCESSING_RATE_ESTIMATE: f64 = 1e3;
+use crate::display::CustomDisplay;
+use crate::history::AvgInfoWithSummaries;
 
-macro_rules! with_num_err_vars(
-    ($macro_id:ident $(; $($args:tt)+)?) => {
-        $macro_id!(variants:[Negative, NonFinite, IsZero, Conversion, Other] $(; $($args)+)? );
-    }
-);
-
-macro_rules! num_err_enum {
-    (variants:[$($variant:ident),*]) => {
-        #[derive(Clone, Debug)]
-        enum NumErr {
-            $($variant(String)),*
-        }
-
-        impl Error for NumErr {}
-
-        impl NumErr {
-            fn info(&self) -> &str {
-                match self {
-                    $(NumErr::$variant(x) => x,)*
-                }
-            }
-
-            fn map_info<F: FnOnce(&str) -> String>(&self, f: F) -> NumErr {
-                match self {
-                    $(NumErr::$variant(x) => NumErr::$variant(f(x)),)*
-                }
-
-            }
-
-            paste! {
-                $(fn [< $variant:snake:lower >]<T: Display>(n: T) -> Self { Self::$variant(format!("{}", n)) })*
-            }
-        }
-    };
-}
-with_num_err_vars!(num_err_enum);
-
-macro_rules! num_err_display {
-    (variants:[$($variant:ident),*]) => {
-        impl Display for NumErr {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> FmtRes {
-                write!(f, "{}({:?})", match self {
-                    $(NumErr::$variant(x) => stringify!($variant),)*
-                }, self.info())
-            }
-        }
-    };
-}
-with_num_err_vars!(num_err_display);
-
-macro_rules! num_err_new_methods {
-    (variants:[$($variant:ident),*]) => {
-        paste! {
-            $(
-                fn [< new_ $variant >](info: T) -> Self {
-                    Self::$variant(info)
-                }
-            )*
-        }
-    };
-}
-
-// trait NumErr: Sized + Display {
-//     type Data;
-//     type MapOutput;
-//     fn map<Map: FnOnce(Self::Data) -> DataTarget, DataTarget: Clone + Debug>(
-//         self,
-//         f: Map,
-//     ) -> Self::MapOutput<DataTarget>;
-//     with_num_err_vars!(num_err_new_methods);
-// }
-
-// macro_rules! num_err_structs {
-//     (@gen_struct $struct_id:ident) => {
-//         #[derive(Clone, Debug)]
-//         struct $struct_id<T: Clone + Debug> {
-//             ty: NumErrType,
-//             info: T,
-//         }
-
-//         impl<T: Clone + Debug> NumErr for $struct_id<T> {
-//             type Data = T;
-//             type MapOutput<U: Clone + Debug> = $struct_id<U>;
-
-//             fn new(ty: NumErrType, info: T) -> Self {
-//                 Self { ty, info }
-//             }
-
-//             fn map<Map: FnOnce(T) -> Target, Target: Clone + Debug>(self, f: Map) -> $struct_id<Target> {
-//                 $struct_id {
-//                     ty: self.ty,
-//                     info: f(self.info),
-//                 }
-//             }
-//         }
-
-//         impl<T: Clone + Debug> Display for $struct_id<T> {
-//             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> FmtRes {
-//                 write!(f, "{}({:?})", self.ty, self.info)
-//             }
-//         }
-//     };
-//     (variants:[$($variant:ident),*]) => {
-//         paste!{
-//             $(num_err_structs!(@gen_struct [< $variant Err >]);)*
-//         }
-//     };
-// }
-// with_num_err_vars!(num_err_structs);
-
-// #[derive(Clone, Debug)]
-// struct NumErr<T: Clone + Debug> {
-//     ty: NumErrType,
-//     info: T,
-// }
-
-// impl<T: Clone + Debug> NumErr for NumErr<T> {
-//     type Data = T;
-//     type MapOutput<U: Clone + Debug> = NumErr<U>;
-
-//     fn new(ty: NumErrType, info: T) -> Self {
-//         Self { ty, info }
-//     }
-
-//     fn map<Map: FnOnce(T) -> Target, Target: Clone + Debug>(self, f: Map) -> NumErr<Target> {
-//         NumErr {
-//             ty: self.ty,
-//             info: f(self.info),
-//         }
-//     }
-// }
-
-// impl<T: Clone + Debug> Display for NumErr<T> {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> FmtRes {
-//         write!(f, "{}({:?})", self.ty, self.info)
-//     }
-// }
-
-type NumResult<T> = Result<T, NumErr>;
-
-trait RoundSigFigs: BasicNum + TryFromNum<f64> + TryIntoNum<f64> {
-    fn from_f64(f: f64) -> NumResult<Self>;
-    fn into_f64(self) -> NumResult<f64>;
-
-    fn delta(x: f64) -> Option<i32> {
-        let f = x.abs().log10().ceil();
-        f.is_finite().then_some(f as i32)
-    }
-
-    fn round_sig_figs(&self, n_sig_figs: i32) -> Self {
-        let x: f64 = self.into_f64().unwrap();
-        Self::from_f64(if x == 0. || n_sig_figs == 0 {
-            0.0_f64
-        } else {
-            if let Some(delta) = Self::delta(x) {
-                let shift = n_sig_figs - delta;
-                let shift_factor = 10_f64.powi(shift);
-                (x * shift_factor).round() / shift_factor
-            } else {
-                0.0_f64
-            }
-        })
-        .unwrap()
-    }
-}
-
-impl<T> RoundSigFigs for T
-where
-    T: BasicNum + TryFromNum<f64> + TryIntoNum<f64>,
-{
-    fn from_f64(f: f64) -> NumResult<T> {
-        Self::try_from_num(f)
-    }
-
-    fn into_f64(self) -> NumResult<f64> {
-        self.try_into_num()
-    }
-}
+pub const NUM_THREADS: usize = 8;
+pub const DEFAULT_EXECUTE_LOOP_SLEEP: Duration = Duration::from_micros(10);
+pub const UPDATE_PRINT_DELAY: Duration = Duration::from_secs(5);
+pub const DEFAULT_WORK_CHUNK_SIZE: usize = 64;
+pub const MAX_HISTORY: usize = 10;
 
 #[derive(PartialEq, Eq, Copy, Clone)]
 enum Status {
@@ -269,1335 +95,6 @@ impl Printer {
             .map(|buf_sender| buf_sender.flush_send())
             .unwrap_or(Ok(()));
         result
-    }
-}
-
-trait CustomDisplay {
-    fn custom_display(&self) -> String;
-}
-
-impl CustomDisplay for f64 {
-    fn custom_display(&self) -> String {
-        format!("{:e}", self.round_sig_figs(4))
-    }
-}
-
-impl CustomDisplay for Duration {
-    fn custom_display(&self) -> String {
-        format!("{}s", self.as_secs_f64().custom_display())
-    }
-}
-
-impl CustomDisplay for usize {
-    fn custom_display(&self) -> String {
-        format!("{self}")
-    }
-}
-
-impl<T> CustomDisplay for Option<T>
-where
-    T: CustomDisplay,
-{
-    fn custom_display(&self) -> String {
-        if let Some(inner) = self {
-            inner.custom_display()
-        } else {
-            format!("None")
-        }
-    }
-}
-
-trait BasicNum
-where
-    Self: Sized + Clone + Copy + Debug + Default + PartialOrd + PartialEq + BasicTests,
-{
-}
-
-impl<T> BasicNum for T where
-    Self: Clone + Copy + Debug + Default + PartialOrd + PartialEq + BasicTests
-{
-}
-
-trait BasicTests: Clone + Debug + FiniteTest + NonNegTest + NonZeroTest {
-    #[inline]
-    fn test_all(&self) -> NumResult<&Self> {
-        self.test_finite()
-            .and_then(|n| n.test_non_neg().and_then(|n| n.test_non_zero()))
-    }
-}
-
-impl<T: Clone + Debug + FiniteTest + NonNegTest + NonZeroTest> BasicTests for T {}
-
-trait SignedNum
-where
-    Self: BasicNum
-        + FiniteTest
-        + NonNegTest
-        + Add<Self, Output = Self>
-        + Mul<Self, Output = Self>
-        + Sub<Self, Output = Self>
-        + Div<Self, Output = Self>,
-{
-    fn positive(self) -> bool;
-    fn negative(self) -> bool;
-    fn signum(self) -> Self;
-}
-
-impl SignedNum for f64 {
-    #[inline]
-    fn positive(self) -> bool {
-        self.is_sign_positive()
-    }
-    #[inline]
-    fn negative(self) -> bool {
-        self.is_sign_negative()
-    }
-    #[inline]
-    fn signum(self) -> Self {
-        f64::signum(self)
-    }
-}
-
-impl SignedNum for isize {
-    #[inline]
-    fn positive(self) -> bool {
-        isize::is_positive(self)
-    }
-    #[inline]
-    fn negative(self) -> bool {
-        isize::is_negative(self)
-    }
-    #[inline]
-    fn signum(self) -> Self {
-        isize::signum(self)
-    }
-}
-
-trait DivUsize
-where
-    Self: Sized + BasicNum,
-{
-    fn div_usize(&self, rhs: usize) -> NumResult<Self>;
-}
-
-trait FromNum<T>
-where
-    T: BasicNum,
-{
-    fn from_num(value: T) -> Self;
-}
-
-trait TryFromNum<T>
-where
-    T: BasicNum,
-    Self: Sized + BasicNum,
-{
-    fn try_from_num(value: T) -> NumResult<Self>;
-}
-
-trait IntoNum<T>
-where
-    T: BasicNum,
-{
-    fn into_num(&self) -> T;
-}
-
-impl<Source, Target> IntoNum<Target> for Source
-where
-    Target: FromNum<Source> + BasicNum,
-    Source: BasicNum,
-{
-    fn into_num(&self) -> Target {
-        Target::from_num(*self)
-    }
-}
-
-trait TryIntoNum<Target>
-where
-    Self: BasicNum,
-    Target: BasicNum,
-{
-    fn try_into_num(&self) -> NumResult<Target>;
-}
-
-impl<Source, Target> TryIntoNum<Target> for Source
-where
-    Target: TryFromNum<Source> + BasicNum,
-    Source: BasicNum,
-{
-    fn try_into_num(&self) -> NumResult<Target> {
-        Target::try_from_num(*self)
-    }
-}
-
-macro_rules! map_enum_inner {
-    ($enum:ident, $enum_var:ident, (|$match_var:ident : $match_ty:ty| -> $out_ty:ty { $body:expr }) ($($variant:ident),*)) => {
-        match $enum_var {
-            $($enum::$variant(x) => {
-                (|$match_var: $match_ty| -> $out_ty { $body })(x)
-            }),*
-        }
-    }
-}
-
-trait FiniteTest: Sized {
-    fn test_finite(&self) -> NumResult<&Self>;
-}
-
-trait NonNegTest: Sized {
-    fn test_non_neg(&self) -> NumResult<&Self>;
-}
-
-trait NonZeroTest: Sized {
-    fn test_non_zero(&self) -> NumResult<&Self>;
-}
-
-macro_rules! standardize_num_auto_impl_args {
-    (
-        [$macro_id:ident]
-        [
-            $self:ident$(<$($self_params:ident),+>)?
-            $( where $($where_args:tt)+)?
-        ]
-        $($rest:tt)*
-    ) => {
-        $macro_id!(
-            @standardized
-            [
-                (
-                    Self,
-                    $self$(<$($self_params),+>)?
-                )$(<$($self_params)+,>)?
-                $( where $($where_args)+)?
-            ]
-            $($rest)*
-        );
-    };
-    (
-        [$macro_id:ident]
-        [
-            (
-                $source:ident$(<$($source_params:tt)*>)?,
-                $target:ident$(<$($target_params:ident),+>)?
-            )$(<$($impl_args:tt)+>)?
-            $( where $($where_args:tt)+)?
-        ]
-        $($rest:tt)*
-    ) => {
-        $macro_id!(
-            @standardized
-            [
-                (
-                    $source$(<$($source_params),+>)?,
-                    $target$(<$($target_params),+>)?
-                )$(<$($source_params)+,$($target_params)+,>)?
-                $( where $($where_args)+)?
-            ]
-            $($rest)*
-        );
-    };
-}
-
-macro_rules! auto_from_num {
-    (
-        [
-            $($type_info:tt)*
-        ]
-        $($rest:tt)*
-    ) => {
-        standardize_num_auto_impl_args!(
-            [auto_from_num]
-            [
-                $($type_info)*
-            ]
-            $($rest)*
-        );
-    };
-    (
-        @standardized
-        [
-            (
-                $source:ident$(<$($source_params:ident),+>)?,
-                $target:ident$(<$($target_params:ident),+>)?
-            )$(<$($impl_args:ident)+,>)?
-            $( where $($where_args:tt)+)?
-        ]
-        trivial
-    ) => {
-        impl$(<$($impl_args),+>)?
-            FromNum<$source$(<$($source_params),+>)?>
-                for
-            $target$(<$($target_params),+>)?
-        $(where $($where_args)+)? {
-            #[inline]
-            fn from_num(value: $source$(<$($source_params),+>)?) -> Self {
-                value
-            }
-        }
-    };
-    (
-        @standardized
-        [
-            (
-                $source:ident$(<$($source_params:ident),+>)?,
-                $target:ident$(<$($target_params:ident),+>)?
-            )$(<$($impl_args:ident)+,>)?
-            $( where $($where_args:tt)+)?
-        ]
-        primitive
-    ) => {
-        impl$(<$($impl_args),+>)?
-            FromNum<$source$(<$($source_params),+>)?>
-                for
-            $target$(<$($target_params)+>)?
-        $(where $($where_args)+)? {
-            #[inline]
-            fn from_num(value: $source$(<$($source_params),+>)?) -> Self {
-                value as Self
-            }
-        }
-    };
-    (
-        @standardized
-        [
-            (
-                $source:ident$(<$($source_params:ident),+>)?,
-                $target:ident$(<$($target_params:ident),+>)?
-            )$(<$($impl_args:ident)+,>)?
-            $( where $($where_args:tt)+)?
-        ]
-        |$inp:ident| { $body:expr }
-    ) => {
-        impl$(<$($impl_args),+>)?
-            FromNum<$source$(<$($source_params),+>)?>
-                for
-            $target$(<$($target_params)+>)?
-        $(where $($where_args)+)? {
-            #[inline]
-            fn from_num(value: $source$(<$($source_params),+>)?) -> Self {
-                (|$inp: $source| -> Self { $body })(value)
-            }
-        }
-    };
-}
-
-macro_rules! auto_try_from_num {
-    (
-        @standardized
-        [
-            (
-                $source:ident$(<$($source_params:ident),+>)?,
-                $target:ident$(<$($target_params:ident),+>)?
-            )$(<$($impl_args:ident)+,>)?
-            $( where $($where_args:tt)+)?
-        ]
-        |$inp:ident| { $body:expr }
-    ) => {
-        impl$(<$($impl_args),+>)?
-            TryFromNum<$source$(<$($source_params),+>)?>
-                for
-            $target$(<$($target_params),+>)?
-        $(where $($where_args)+)? {
-            #[inline]
-            fn try_from_num(source: $source$(<$($source_params),+>)?) -> NumResult<Self> {
-                (
-                    |   $inp: $source$(<$($source_params),+>)?  | -> $target$(<$($target_params),+>)? {
-                        $body:expr
-                    }
-                )(source)
-            }
-        }
-    };
-    (
-        @standardized
-        [
-            (
-                $source:ident$(<$($source_params:ident),+>)?,
-                $target:ident$(<$($target_params:ident),+>)?
-            )$(<$($impl_args:ident)+,>)?
-            $( where $($where_args:tt)+)?
-        ]
-    ) => {
-        impl$(<$($impl_args),+>)?
-            TryFromNum<$source$(<$($source_params),+>)?>
-                for
-            $target$(<$($target_params),+>)?
-        $(where $($where_args)+)? {
-            #[inline]
-            fn try_from_num(source: $source$(<$($source_params),+>)?) -> NumResult<Self> {
-                source
-                    .test_all()
-                    .map(|&s| <Self as FromNum<$source$(<$($source_params),+>)?>>::from_num(s))
-            }
-        }
-    };
-    (
-        [
-            (
-                $source:ident$(<$($source_params:ident),+>)?,
-                $target:ident$(<$($target_params:ident),+>)?
-            )$(<$($impl_args:ident)+,>)?
-            $( where $($where_args:tt)+)?
-        ] $($rest:tt)*
-    ) => {
-        standardize_num_auto_impl_args!(
-            [auto_try_from_num]
-            [
-                (
-                    $source$(<$($source_params),+>)?,
-                    $target$(<$($target_params),+>)?
-                )$(<$($impl_args)+,>)?
-                $( where $($where_args)+)?
-            ]
-            $($rest)*
-        );
-    };
-    (
-        $($type_info:tt)*
-    ) => {
-        standardize_num_auto_impl_args!(
-            [auto_try_from_num]
-            [ $($type_info)* ]
-        );
-    };
-}
-
-macro_rules! auto_test {
-    (
-        [
-            $($type_info:tt)*
-        ]
-        $($rest:tt)*
-    ) => {
-        standardize_num_auto_impl_args!(
-            [auto_test]
-            [ $($type_info)* ]
-            $($rest)*
-        );
-    };
-    (
-        @standardized
-        [
-            $($type_info:tt)*
-        ]
-        NonNeg: [signed_num]
-    ) => {
-        auto_test!(
-            @standardized
-            [$($type_info)*]
-            NonNeg:[
-                |inp| {
-                    (!inp.negative()).then_some(inp).ok_or(NumErr::negative(inp))
-                }
-            ]
-        );
-    };
-    (
-        @standardized
-        [
-            (
-                $ignore:ident$(<$($ignore_params:ident),+>)?,
-                $self:ident$(<$($params:ident),+>)?
-            )$(<$($impl_args:ident)+,>)?
-            $( where $($where_args:tt)+)?
-        ]
-        $test:ident : [trivial]
-    ) => {
-        paste! {
-            impl$(<$($impl_args),+>)?
-                [< $test Test >]
-                    for
-                $self$(<$($params),+>)?
-            $(where $($where_args)+)?
-            {
-                #[inline]
-                fn [< test_ $test:snake:lower >](&self) -> NumResult<&Self> {
-                    Ok(&self)
-                }
-            }
-        }
-    };
-    (
-        @standardized
-        [
-            (
-                $ignore:ident$(<$($ignore_params:ident),+>)?,
-                $self:ident$(<$($params:ident),+>)?
-            )$(<$($impl_args:ident)+,>)?
-            $( where $($where_args:tt)+)?
-        ]
-        $test:ident : [|$inp:ident| { $body:expr }]
-    ) => {
-        paste! {
-            impl$(<$($impl_args),+>)?
-                [< $test Test >]
-                    for
-                $self$(<$($params),+>)?
-            $(where $($where_args)+)?
-            {
-                #[inline]
-                fn [< test_ $test:snake:lower >]<'a>(&'a self) -> NumResult<&'a Self> {
-                    (|$inp: &'a $self| -> NumResult<&'a Self> { $body })(self)
-                }
-            }
-        }
-    };
-}
-
-macro_rules! multi_auto_test {
-    (
-        [
-            $($ty_info:tt)*
-        ]
-        $($args:tt)*
-    ) => {
-        standardize_num_auto_impl_args!(
-            [multi_auto_test]
-            [
-                $($ty_info)*
-            ]
-            $($args)*
-        )
-    };
-    (
-        @standardized
-        [
-            $($ty_info:tt)*
-        ]
-    ) => {};
-    (
-        @standardized
-        [
-            $($ty_info:tt)*
-        ]
-        ($test:ident : [$($args:tt)*])
-        $($rest:tt)*
-    ) => {
-        auto_test!(
-            @standardized
-            [
-                $($ty_info)*
-            ]
-            $test:[$($args)*]
-        );
-        multi_auto_test!(@standardized [$($ty_info)*] $($rest)*);
-    };
-}
-
-macro_rules! auto_basic_num {
-    (
-        @standardized
-        [
-            $($ty_info:tt)*
-        ]
-        $(($test:ident:[$($args:tt)*]))*
-    ) => {
-        auto_from_num!(
-            @standardized
-            [
-                $($ty_info)*
-            ]
-            trivial
-        );
-        auto_try_from_num!(
-            @standardized
-            [
-                $($ty_info)*
-            ]
-        );
-        multi_auto_test!(
-            @standardized
-            [
-                $($ty_info)*
-            ]
-            $(($test:[$($args)*]))*
-        );
-    };
-    (
-        [
-            $($ty_info:tt)*
-        ]
-        $($rest:tt)*
-
-    ) => {
-        standardize_num_auto_impl_args!(
-            [ auto_basic_num ]
-            [
-                $($ty_info)*
-            ]
-            $($rest)*
-        );
-    };
-}
-
-auto_basic_num!(
-    [Duration]
-    (NonNeg:[trivial])
-    (Finite:[trivial])
-    (NonZero:[trivial])
-);
-
-auto_basic_num!(
-    [usize]
-    (NonNeg:[trivial])
-    (Finite:[trivial])
-    (NonZero:[trivial])
-);
-
-auto_basic_num!(
-    [u32]
-    (NonNeg:[trivial])
-    (Finite:[trivial])
-    (NonZero:[trivial])
-);
-
-auto_basic_num!(
-    [isize]
-    (NonNeg:[signed_num])
-    (Finite:[trivial])
-    (NonZero:[trivial])
-);
-
-auto_basic_num!(
-    [f64]
-    (NonNeg:[signed_num])
-    (Finite:[|inp| { inp.is_finite().then_some(inp).ok_or(NumErr::non_finite(inp)) }])
-    (NonZero:[trivial])
-);
-
-auto_basic_num!(
-    [AbsF64]
-    (NonNeg:[|inp| { inp.test_non_neg() } ])
-    (Finite:[|inp| { inp.test_finite() }])
-    (NonZero:[trivial])
-);
-
-trait TakeAbsolute<Absolute> {
-    fn take_absolute(self) -> Absolute;
-}
-
-trait AbsoluteNum<Adaptor>
-where
-    Self: BasicNum + DivUsize + FromNum<Adaptor>,
-    Adaptor: AdaptorNum<Self>,
-{
-}
-
-trait AdaptorNum<Absolute>
-where
-    Absolute: BasicNum + DivUsize + FromNum<Self>,
-    Self: SignedNum + FromNum<Absolute> + TakeAbsolute<Absolute>,
-{
-}
-
-impl<Absolute, Adaptor> TakeAbsolute<Absolute> for Adaptor
-where
-    Absolute: BasicNum + DivUsize + FromNum<Self>,
-    Self: SignedNum + FromNum<Absolute>,
-{
-    fn take_absolute(self) -> Absolute {
-        Absolute::from_num(self.signum() * self)
-    }
-}
-
-impl<Adaptor, Absolute> AdaptorNum<Absolute> for Adaptor
-where
-    Absolute: BasicNum + DivUsize + FromNum<Self>,
-    Self: SignedNum + FromNum<Absolute> + TakeAbsolute<Absolute>,
-{
-}
-
-impl TryFromNum<usize> for u32 {
-    fn try_from_num(value: usize) -> NumResult<Self> {
-        <u32 as TryFrom<usize>>::try_from(value).map_err(|err| NumErr::conversion(err))
-    }
-}
-
-#[derive(Copy, Clone, Default, Debug, PartialEq, PartialOrd)]
-struct AbsF64(f64);
-
-macro_rules! auto_abs_num {
-    (
-        @standardized
-        [
-            (
-                $abs:ident$(<$($abs_params:ident),+>)?,
-                $adp:ident$(<$($adp_params:ident),+>)?
-            )$(<$($impl_args:ident)+,>)?
-            $( where $($where_args:tt)+)?
-        ]
-    ) => {
-        impl$(<$($impl_args)+,>)?
-            AbsoluteNum<$adp$(<$($adp_params),+>)?>
-                for
-            $abs$(<$($abs_params),+>)?
-            $( where $($where_args:tt)+)?
-        {}
-    };
-    (
-        @standardized
-        [
-            (
-                $abs:ident$(<$($abs_params:ident),+>)?,
-                $adp:ident$(<$($adp_params:ident),+>)?
-            )$(<$($impl_args:ident)+,>)?
-            $( where $($where_args:tt)+)?
-        ]
-        (div_usize:[$($args:tt)*]) $($rest:tt)*
-    ) => {
-        auto_div_usize!(
-            [
-                $abs$(<$($abs_params),+>)?
-                $( where $($where_args)+)?
-            ]
-            $($args)*
-        );
-        auto_abs_num!(
-            @standardized
-            [
-                (
-                    $abs$(<$($abs_params),+>)?,
-                    $adp$(<$($adp_params),+>)?
-                )$(<$($impl_args)+,>)?
-                $( where $($where_args)+)?
-            ]
-            $($rest)*
-        );
-    };
-    (
-        @standardized
-        [
-            $($try_info:tt)*
-        ]
-        (from_abs:[$($args:tt)*]) $($rest:tt)*
-    ) => {
-        auto_from_num!(
-            @standardized
-            [
-                $($try_info)*
-            ]
-            $($args)*
-        );
-        auto_abs_num!(
-            @standardized
-            [
-                $($try_info)*
-            ]
-            $($rest)*
-        );
-    };
-    (
-        @standardized
-        [
-            (
-                $abs:ident$(<$($abs_params:ident),+>)?,
-                $adp:ident$(<$($adp_params:ident),+>)?
-            )$(<$($impl_args:ident)+,>)?
-            $( where $($where_args:tt)+)?
-        ]
-        (from_adp:[$($args:tt)*]$(, try_from_override:[$($closure:tt)+])?)
-        $($rest:tt)*
-    ) => {
-        auto_from_num!(
-            @standardized
-            [
-                (
-                    $adp$(<$($adp_params),+>)?,
-                    $abs$(<$($abs_params),+>)?
-                )$(<$($impl_args)+,>)?
-                $( where $($where_args)+)?
-            ]
-            $($args)*
-        );
-        auto_try_from_num!(
-            @standardized
-            [
-                (
-                    $adp$(<$($adp_params),+>)?,
-                    $abs$(<$($abs_params),+>)?
-                )$(<$($impl_args)+,>)?
-                $( where $($where_args)+)?
-            ]
-            $($($closure)+)?
-        );
-        auto_abs_num!(
-            @standardized
-            [
-                (
-                    $abs$(<$($abs_params),+>)?,
-                    $adp$(<$($adp_params),+>)?
-                )$(<$($impl_args)+,>)?
-                $( where $($where_args)+)?
-            ]
-            $($rest)*
-        );
-    };
-    (
-        @standardized
-        [
-            $($type_info:tt)*
-        ]
-    ) => {};
-    (
-        [
-            $($type_info:tt)*
-        ]
-        $($args:tt)+
-    ) => {
-        standardize_num_auto_impl_args!(
-            [auto_abs_num]
-            [$($type_info)*] $($args)+
-        );
-    };
-}
-
-macro_rules! nested_try_from {
-    ( @internal [$(($inps:ident))*] [$closure:expr]) => {
-        Ok(($closure)($($inps),*))
-    };
-    ( @internal [$($tracked_ids:tt)*] ($id:ident -> $target:ty) $($rest:tt)*) => {
-        nested_try_from!{
-            @internal [$($tracked_ids)*] ($id:($id) -> $target) $($rest)*
-        }
-    };
-    ( @internal [$($tracked_ids:tt)*] ($id:ident:($val_expr:expr) -> $target:ty) $($rest:tt)* ) => {
-        <$target>::try_from_num($val_expr).and_then(|$id| nested_try_from!{
-            @internal
-            [$($tracked_ids)* ($id)]
-            $($rest)*
-        })
-
-    };
-    ( ($id:ident$(:($val_expr:expr))? -> $target:ty) $($rest:tt)* ) => {
-        nested_try_from!(@internal [] ($id$(:($val_expr))? -> $target) $($rest)* )
-    };
-}
-
-auto_from_num!([(f64, usize)] | inp | { inp.round() as usize });
-auto_from_num!([(usize, f64)] primitive);
-auto_try_from_num!([(usize, f64)]);
-
-macro_rules! auto_div_usize {
-    (
-        [
-            $this:ident$(<$($params:ident),+>)?
-            $( where $($where_args:tt)+)?
-        ]
-        |$lhs:ident, $rhs:ident| { $body:expr }
-    ) => {
-        impl$(<$($params),+>)? DivUsize for $this$(<$($params),+>)? $( where $($where_args)+)? {
-            fn div_usize(&self, rhs: usize) -> NumResult<Self> {
-                (|$lhs : Self, $rhs : usize| -> NumResult<Self> { $body })(*self, rhs)
-            }
-        }
-    };
-    (
-        [
-            $this:ident$(<$($params:ident),+>)?
-            $( where $($where_args:tt)+)?
-        ]
-        trivial
-    ) => {
-        impl$(<$($params),+>)? DivUsize for $this$(<$($params),+>)? $( where $($where_args)+)? {
-            fn div_usize(&self, rhs: usize) -> NumResult<Self> {
-                nested_try_from!(
-                    (lhs:(*self) -> f64)
-                    (rhs:(rhs) -> f64)
-                    [
-                        |lhs: f64, rhs:f64| -> Self
-                        {
-                            <$this$(<$($params),+>)?>::from_num((lhs/rhs).round())
-                        }
-                    ]
-                )
-            }
-        }
-    };
-}
-
-auto_abs_num!(
-    [(usize, isize)]
-    (div_usize:[trivial])
-    (from_abs:[primitive])
-    (from_adp:[primitive])
-);
-
-auto_abs_num!(
-    [(Duration, f64)]
-    (div_usize:[
-        |lhs, rhs| {
-            rhs
-                .test_non_zero()
-                .and_then(
-                    |&rhs|
-                        u32::try_from_num(rhs)
-                            .and_then(|rhs| Ok(lhs / rhs) ))
-                            .map_err(|err| NumErr::Other(format!("{err}"))
-                )
-        }
-    ])
-    (from_abs:[ |inp| { inp.as_secs_f64() } ])
-    (from_adp:[ |inp| { Duration::from_secs_f64(inp) } ])
-);
-
-auto_abs_num!(
-    [(AbsF64, f64)]
-    (
-        div_usize:[
-            |lhs, rhs| {
-                    rhs
-                        .test_non_zero()
-                        .and_then(
-                            |&rhs|
-                                u32::try_from_num(rhs)
-                                    .and_then(|rhs| Ok(AbsF64(lhs.0 / rhs as f64)) ))
-                                    .map_err(|err| NumErr::Other(format!("{err}"))
-                        )
-                }
-        ]
-    )
-    (from_abs:[|inp| { inp.0 }])
-    (from_adp:[|inp| { AbsF64(inp) }])
-);
-
-// impl FromNum<AbsF64> for f64 {
-//     #[inline]
-//     fn from_num(value: AbsF64) -> Self {
-//         value.0
-//     }
-// }
-
-// impl AbsoluteNum<f64> for AbsF64 {}
-// impl FromNum<f64> for AbsF64 {
-//     fn from_num(value: f64) -> Self {
-//         Self(value)
-//     }
-// }
-impl CustomDisplay for AbsF64 {
-    fn custom_display(&self) -> String {
-        self.0.custom_display()
-    }
-}
-
-// impl DivUsize for AbsF64 {
-//     fn div_usize(&self, rhs: usize) -> NumResult<Self, usize> {
-//         rhs.test_non_zero()
-//             .and_then(|rhs| (self.0 / rhs as f64).try_into_num())
-//             .or_else(|_| Ok(Self::from(0.0)))
-//     }
-// }
-
-impl AbsoluteNum<f64> for f64 {}
-
-trait AdaptedNum
-where
-    Self: BasicNum + TryIntoNum<f64>,
-{
-    type Absolute: AbsoluteNum<Self::Adaptor>;
-    type Adaptor: AdaptorNum<Self::Absolute>;
-    fn new_same_sign(&self, abs_val: Self::Absolute) -> Self;
-    fn adaptor(&self) -> Self::Adaptor;
-    fn absolute(&self) -> Self::Absolute;
-    fn try_adaptor_as_absolute(&self) -> NumResult<Self::Absolute> {
-        Ok(InnerAbsolute::<Self>::from_num(
-            self.adaptor()
-                .test_finite()
-                .and_then(|value| value.test_non_neg())?,
-        ))
-    }
-    fn from_adaptor(adaptor: Self::Adaptor) -> Self;
-    fn from_absolute(absolute: Self::Absolute) -> Self;
-}
-
-type InnerAbsolute<Adapted> = <Adapted as AdaptedNum>::Absolute;
-type InnerAdaptor<Adapted> = <Adapted as AdaptedNum>::Adaptor;
-
-impl<Absolute, Adaptor> CustomDisplay for Adapted<Absolute, Adaptor>
-where
-    Absolute: AbsoluteNum<Adaptor> + CustomDisplay,
-    Adaptor: AdaptorNum<Absolute>,
-{
-    fn custom_display(&self) -> String {
-        self.absolute().custom_display()
-    }
-}
-
-trait HistoryNum
-where
-    Self: AdaptedNum,
-{
-    fn difference(&self, rhs: Self) -> Self {
-        Self::from_adaptor(self.adaptor() - rhs.adaptor())
-    }
-    fn increment(&self, rhs: Self) -> Self {
-        Self::from_adaptor(self.adaptor() + rhs.adaptor())
-    }
-    fn ratio(&self, rhs: Self) -> Option<f64> {
-        if rhs.absolute() > InnerAbsolute::<Self>::default() {
-            let lhs_as_f64: f64 = self.adaptor().into_num();
-            let rhs_as_f64: f64 = rhs.adaptor().into_num();
-            Some(lhs_as_f64 / rhs_as_f64)
-        } else {
-            None
-        }
-    }
-    fn div_usize(&self, rhs: usize) -> NumResult<Self> {
-        self.absolute()
-            .div_usize(rhs)
-            .map(|abs| Self::new_same_sign(&self, abs))
-    }
-    fn iter_sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Self::default(), |u, v| u.increment(v))
-    }
-}
-
-impl<T> HistoryNum for T where Self: AdaptedNum {}
-
-#[derive(Copy, Clone, Debug, Default)]
-struct Adapted<Absolute, Adaptor>
-where
-    Absolute: AbsoluteNum<Adaptor>,
-    Adaptor: AdaptorNum<Absolute>,
-{
-    adaptor: Adaptor,
-    absolute: Absolute,
-}
-
-impl<Absolute, Adaptor> FromNum<Adapted<Absolute, Adaptor>> for Adaptor
-where
-    Absolute: AbsoluteNum<Adaptor>,
-    Adaptor: AdaptorNum<Absolute>,
-{
-    fn from_num(value: Adapted<Absolute, Adaptor>) -> Self {
-        value.adaptor
-    }
-}
-// multi_auto_test!(
-//     [Adapted<Absolute, Adaptor> where
-//     Absolute: AbsoluteNum<Adaptor>,
-//     Adaptor: AdaptorNum<Absolute>,]
-// (NonNeg:[|inp| { (!inp.adaptor().is_negative()).then_some(inp).ok_or(NumErr::Negative(inp)) }])
-// (NonZero:[|inp| { !inp.absolute().test_non_zero().map_err(|err| err.replace_inner(inp)) }])
-// (Finite:[|inp| { inp.adaptor().test_finite().map_err(|err| err.replace_inner(inp)) } ])
-// );
-auto_basic_num!(
-    [
-        Adapted<Absolute, Adaptor>
-            where
-                Absolute: AbsoluteNum<Adaptor>,
-                Adaptor: AdaptorNum<Absolute>,
-    ]
-    (NonNeg:[|inp| { (!inp.adaptor().is_negative()).then_some(inp).ok_or(NumErr::Negative(inp)) }])
-    (NonZero:[|inp| { !inp.absolute().test_non_zero().map_err(|err| err.replace_inner(inp)) }])
-    (Finite:[|inp| { inp.adaptor().test_finite().map_err(|err| err.replace_inner(inp)) } ])
-);
-
-impl<Absolute, Adaptor> FromNum<Adaptor> for Adapted<Absolute, Adaptor>
-where
-    Absolute: AbsoluteNum<Adaptor>,
-    Adaptor: AdaptorNum<Absolute>,
-{
-    fn from_num(value: Adaptor) -> Self {
-        Self {
-            adaptor: value,
-            absolute: value.take_absolute(),
-        }
-    }
-}
-
-auto_try_from_num!(
-    [
-        (Adapted<Absolute, Adaptor>, f64) where
-        Absolute: AbsoluteNum<Adaptor>,
-        Adaptor: AdaptorNum<Absolute>,
-    ]
-    |inp| { f64::try_from_num(inp.adaptor()) }
-);
-
-impl<Absolute, Adaptor> AdaptedNum for Adapted<Absolute, Adaptor>
-where
-    Absolute: AbsoluteNum<Adaptor>,
-    Adaptor: AdaptorNum<Absolute>,
-{
-    type Absolute = Absolute;
-
-    type Adaptor = Adaptor;
-
-    fn adaptor(&self) -> Self::Adaptor {
-        self.adaptor
-    }
-
-    fn new_same_sign(&self, abs_val: Self::Absolute) -> Self {
-        Self {
-            adaptor: self.adaptor.signum() * Adaptor::from_num(abs_val),
-            absolute: abs_val,
-        }
-    }
-
-    fn absolute(&self) -> Self::Absolute {
-        self.absolute
-    }
-
-    fn from_adaptor(adaptor: Self::Adaptor) -> Self {
-        Self {
-            adaptor,
-            absolute: adaptor.take_absolute(),
-        }
-    }
-
-    fn from_absolute(absolute: Self::Absolute) -> Self {
-        Self {
-            adaptor: Adaptor::from_num(absolute),
-            absolute,
-        }
-    }
-}
-
-impl<Absolute, Adaptor> PartialEq for Adapted<Absolute, Adaptor>
-where
-    Absolute: AbsoluteNum<Adaptor>,
-    Adaptor: AdaptorNum<Absolute>,
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.adaptor.eq(&other.adaptor)
-    }
-}
-
-impl<Absolute, Adaptor> PartialOrd for Adapted<Absolute, Adaptor>
-where
-    Absolute: AbsoluteNum<Adaptor>,
-    Adaptor: AdaptorNum<Absolute>,
-{
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.adaptor.partial_cmp(&other.adaptor)
-    }
-}
-
-impl DivUsize for f64 {
-    fn div_usize(&self, rhs: usize) -> NumResult<Self> {
-        rhs.test_non_zero().map(|rhs| self / (rhs as f64))
-    }
-}
-
-type AdaptedF64 = Adapted<AbsF64, f64>;
-
-struct ProcessingRate {
-    history: HistoryVec<AdaptedF64>,
-}
-
-impl FromNum<f64> for isize {
-    fn from_num(value: f64) -> Self {
-        value.test_finite().map(|f| f as isize).unwrap()
-    }
-}
-
-impl FromNum<isize> for f64 {
-    fn from_num(value: isize) -> Self {
-        value as f64
-    }
-}
-
-trait Averageable
-where
-    Self: HistoryNum,
-{
-    fn sub_then_div(&self, sub_rhs: Self, div_rhs: usize) -> Self {
-        self.difference(sub_rhs)
-            .div_usize(div_rhs)
-            .unwrap_or(Self::default())
-    }
-
-    fn add_delta(&self, delta: Self) -> Self {
-        self.increment(delta)
-    }
-
-    fn increment_existing_avg(
-        self,
-        existing_avg: Self,
-        popped: Option<Self>,
-        new_n: usize,
-    ) -> Self {
-        // We want to find a number delta such that delta + existing_avg is the new,
-        // updated average.
-
-        // suppose we have hit the maximum capacity in our history vector
-        // therefore, we will be popping out the last element (`popped`) and then
-        // adding `self` to the history vec. Let `q` be the sum of all the
-        // elements in the history vector apart from the popped one.
-        // So, in this case:
-        //     (q + popped)/n  +  delta          = (q + self)/n
-        // ==  (q + popped)/n  -  (q + self)/n   = -delta
-        // ==  (q + popped)/n  -  (q + self)/n   = -delta
-        // ==  (popped - self)/n                 = -delta
-        // ==  (self - popped)/n                 =  delta
-        // current_average + delta = (current_sum - popped + self)/len
-        // which implies that
-        //
-        // In the case where we have not yet reached the maximum capacity of our
-        // history vector, we will be appending self to the list without changing.
-        // So the increment `delta` should be the solution to:
-        //     q/(n - 1)  +  delta = (q + self)/n
-        //
-        // Instead of solving this directly, note that we have a list of (n - 1)
-        // numbers, with average q/(n - 1). To this list, can we add another number
-        // (the nth number), such that the new average is still q/(n - 1)?
-        // Yes! We know (intuitively) that if we add a new number which is
-        // exactly the existing average, then the existing average will not shift:
-        //    (q + (q/n - 1))/n
-        // == ((n - 1)q + q) / n(n - 1)
-        // == (qn - q + q)/n(n - 1)
-        // == qn / (n(n-1))
-        // == q/(n - 1)
-        //
-        // Going back to our problem of interest, suppose that we have (n - 1)
-        // numbers, and we would like to add another number to it that leaves
-        // the average unchanged. We know that this number is existing_avg. Now
-        // we have a list of n numbers, where the last number is existing_avg.
-        // So, following what we derived in the last section: let
-        // popped == existing_avg
-        //
-        // Then, the new average should be: (self - popped)/n
-        // Now we have a list of n numbers, with the average q/(n - 1),
-        // and we can use the formula derived for the preceding if statement
-        // as follows to get that the increment should be (self - existing_avg)/n:
-        //     (self - existing_avg)/n + existing_avg
-        // ==  (self - existing_avg + n*existing_avg)/n
-        // ==  (self + existing_avg * (n - 1))/n
-        // ==  (self + q)/n
-        // Intriguingly, this formula also works for the case (n - 1) == 0
-        let popped = popped.unwrap_or(existing_avg);
-        let delta = self.sub_then_div(popped, new_n);
-        existing_avg.add_delta(delta)
-    }
-}
-
-#[derive(Debug, Clone)]
-struct HistoryVec<Data>
-where
-    Data: HistoryNum,
-{
-    capacity: usize,
-    inner: Vec<Data>,
-    // current_sum: T,
-    average: Data,
-}
-
-impl<Data> Default for HistoryVec<Data>
-where
-    Data: HistoryNum,
-{
-    fn default() -> Self {
-        HistoryVec {
-            capacity: MAX_HISTORY,
-            inner: Vec::with_capacity(MAX_HISTORY),
-            average: Data::default(),
-        }
-    }
-}
-
-#[derive(Default, Clone, Copy, Debug)]
-struct AvgInfo<T>
-where
-    T: HistoryNum,
-{
-    data: T,
-    delta: T,
-}
-
-impl<T> Display for AvgInfo<T>
-where
-    T: HistoryNum,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{:?}({}{:?})",
-            self.data,
-            self.delta
-                .adaptor()
-                .is_positive()
-                .then_some("+")
-                .unwrap_or("-"),
-            self.delta.absolute()
-        )
-    }
-}
-
-impl<T> AvgInfo<T>
-where
-    T: HistoryNum,
-{
-    fn update(&mut self, new_data: T) -> Self {
-        let last = *self;
-        self.data = new_data;
-        self.delta = self.data.difference(last.data);
-        last
-    }
-}
-
-type TimeSpan = Adapted<Duration, f64>;
-
-#[derive(Default, Clone, Debug)]
-struct AvgInfoBundle {
-    processing_rate: AvgInfo<AdaptedF64>,
-    task_time: AvgInfo<TimeSpan>,
-    idle_time: AvgInfo<TimeSpan>,
-}
-
-impl AvgInfoBundle {
-    fn update(
-        &mut self,
-        processing_rate: AdaptedF64,
-        task_time: TimeSpan,
-        idle_time: TimeSpan,
-    ) -> Self {
-        Self {
-            processing_rate: self.processing_rate.update(processing_rate),
-            task_time: self.task_time.update(task_time),
-            idle_time: self.idle_time.update(idle_time),
-        }
-    }
-}
-
-impl Display for AvgInfoBundle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "pr: {} | tt/it: {} | tt: {} | it : {}",
-            self.processing_rate.data.custom_display(),
-            self.task_time
-                .data
-                .ratio(self.idle_time.data)
-                .map(|f| f.custom_display())
-                .unwrap_or("None".into()),
-            self.task_time.data.custom_display(),
-            self.idle_time.data.custom_display(),
-        )
-    }
-}
-
-impl<T> Averageable for T where T: HistoryNum {}
-
-impl<Data> HistoryVec<Data>
-where
-    Data: HistoryNum,
-{
-    fn push(&mut self, k: InnerAbsolute<Data>) {
-        if self.inner.len() == self.capacity {
-            self.inner.pop();
-        }
-        self.inner.push(Data::from_absolute(k));
-        self.average = (Data::iter_sum(self.inner.iter().copied()))
-            .div_usize(self.inner.len())
-            .unwrap_or(Data::default());
-    }
-
-    // fn last(&self) -> Option<Data> {
-    //     self.inner.last().copied()
-    // }
-
-    fn iter(&self) -> std::slice::Iter<Data> {
-        self.inner.iter()
     }
 }
 
@@ -1667,13 +164,13 @@ impl<T> From<SendError<T>> for WorkError {
 }
 
 #[derive(Clone, Debug, Default)]
-struct Timer {
+struct Timer<const MaxHistory: usize> {
     start: Option<Instant>,
-    history: HistoryVec<TimeSpan>,
+    history: HistoryVec<TimeSpan, MaxHistory>,
     total: Duration,
 }
 
-impl Timer {
+impl<const MaxHistory: usize> Timer<MaxHistory> {
     #[inline]
     fn begin(&mut self) {
         self.start.replace(Instant::now());
@@ -1687,13 +184,18 @@ impl Timer {
             elapsed
         })
     }
+
+    #[inline]
+    fn last(&self) -> Option<TimeSpan> {
+        self.history.last()
+    }
 }
 
 #[derive(Clone, Debug)]
 struct WorkResults {
-    avg_task_time: TimeSpan,
-    avg_idle_time: TimeSpan,
-    avg_processing_rate: AdaptedF64,
+    avg_t_order: TimeSpan,
+    avg_t_idle: TimeSpan,
+    avg_processing_rate: ProcessingRate,
     newly_processed: usize,
     max_dir_size: usize,
     in_flight: usize,
@@ -1702,8 +204,8 @@ struct WorkResults {
 impl Default for WorkResults {
     fn default() -> Self {
         WorkResults {
-            avg_task_time: TimeSpan::default(),
-            avg_idle_time: TimeSpan::default(),
+            avg_t_order: TimeSpan::default(),
+            avg_t_idle: TimeSpan::default(),
             avg_processing_rate: 0.0.into_num(),
             newly_processed: 0,
             in_flight: 0,
@@ -1715,15 +217,15 @@ impl Default for WorkResults {
 impl WorkResults {
     fn merge(mut self, next: WorkResults) -> Self {
         let WorkResults {
-            avg_task_time,
-            avg_idle_time,
+            avg_t_order: avg_task_time,
+            avg_t_idle: avg_idle_time,
             avg_processing_rate,
             newly_processed: dirs_processed,
             max_dir_size,
             in_flight,
         } = next;
-        self.avg_task_time = avg_task_time;
-        self.avg_idle_time = avg_idle_time;
+        self.avg_t_order = avg_task_time;
+        self.avg_t_idle = avg_idle_time;
         self.avg_processing_rate = avg_processing_rate;
         self.newly_processed = self.newly_processed + dirs_processed;
         self.max_dir_size = self.max_dir_size.max(max_dir_size);
@@ -1739,50 +241,73 @@ impl std::iter::Sum for WorkResults {
 }
 
 #[derive(Default)]
-struct ThreadHistory {
-    dirs_processed: HistoryVec<Adapted<usize, isize>>,
-    processing_rates: HistoryVec<AdaptedF64>,
-    work_request_sizes: HistoryVec<Adapted<usize, isize>>,
-    t_order: Timer,
-    t_idle: Timer,
-    t_post_order: Timer,
-    start_t: Timer,
+struct ThreadHistory<const MaxHistory: usize> {
+    dirs_processed: HistoryVec<HistData<usize, isize>, MaxHistory>,
+    processing_rates: HistoryVec<ProcessingRate, MaxHistory>,
+    work_request_sizes: HistoryVec<HistData<usize, isize>, MaxHistory>,
+    t_order: Timer<MaxHistory>,
+    t_idle: Timer<MaxHistory>,
+    t_post_order: Timer<MaxHistory>,
+    start_t: Timer<MaxHistory>,
     total_processed: usize,
 }
 
-macro_rules! end_timer {
-    ($self:ident, $name:ident) => {
-        paste! {
-            $self.[< t_began_ post_order >]
-            .end(&mut $self.[< total_t_ $name >], &mut $self.[<post_order_ times>])
-        }
-    };
+struct InfoBundle {
+    processing_rates: Option<ProcessingRate>,
+    t_order: Option<TimeSpan>,
+    t_idle: Option<TimeSpan>,
+    t_post_order: Option<TimeSpan>,
 }
 
-impl ThreadHistory {
+impl<const MaxHistory: usize> ThreadHistory<MaxHistory> {
     fn began_process(&mut self) {
         self.start_t.begin();
     }
 
     fn began_idling(&mut self) {
-        end_timer!(self, post_order);
+        self.t_post_order.end();
         self.t_idle.begin();
     }
 
     fn began_order(&mut self) {
-        end_timer!(self, idle);
-        end_timer!(self, post_order);
+        self.t_idle.end();
+        self.t_post_order.end();
         self.t_order.begin();
     }
 
     fn began_post_order(&mut self, newly_processed_count: usize) {
-        if let Some(elapsed) = end_timer!(self, order) {
+        if let Some(elapsed) = self.t_order.end() {
             self.processing_rates
-                .push((newly_processed_count as f64 / elapsed.as_secs_f64()).into());
+                .push((newly_processed_count as f64 / elapsed.as_secs_f64()).into_num());
             self.dirs_processed.push(newly_processed_count);
             self.total_processed += newly_processed_count;
         }
         self.t_post_order.begin();
+    }
+
+    fn avg_processing_rate(&self) -> ProcessingRate {
+        self.processing_rates.average
+    }
+
+    fn avg_t_idle(&self) -> TimeSpan {
+        self.t_idle.history.average
+    }
+
+    fn avg_t_order(&self) -> TimeSpan {
+        self.t_order.history.average
+    }
+
+    fn avg_t_post_order(&self) -> TimeSpan {
+        self.t_post_order.history.average
+    }
+
+    fn last(&self) -> InfoBundle {
+        InfoBundle {
+            processing_rates: self.processing_rates.last(),
+            t_order: self.t_order.history.last(),
+            t_idle: self.t_idle.history.last(),
+            t_post_order: self.t_post_order.history.last(),
+        }
     }
 }
 
@@ -1953,12 +478,12 @@ impl WorkBuf {
     }
 }
 
-struct Thread {
+struct Thread<const MaxHistory: usize> {
     id: usize,
     comms: ThreadComms,
     printer: Printer,
     status: Status,
-    history: ThreadHistory,
+    history: ThreadHistory<MaxHistory>,
     max_dir_size: usize,
     shared_from_others: Vec<usize>,
     work_buf: WorkBuf,
@@ -1976,7 +501,7 @@ struct ThreadHandle {
     // shared_work: Vec<PathBuf>,
 }
 
-struct Executor {
+struct Executor<const MaxHistory: usize> {
     print_receiver: Option<Receiver<Vec<String>>>,
     handles: Vec<ThreadHandle>,
     max_dir_size: usize,
@@ -1985,7 +510,7 @@ struct Executor {
     processed: usize,
     orders_submitted: usize,
     loop_sleep_time: Duration,
-    loop_sleep_time_history: HistoryVec<TimeSpan>,
+    loop_sleep_time_history: HistoryVec<TimeSpan, MaxHistory>,
     is_finished: bool,
     unfulfilled_requests: [usize; NUM_THREADS],
     available_surplus: Vec<Vec<WorkSlice>>,
@@ -2003,7 +528,7 @@ macro_rules! printer_print {
     };
 }
 
-impl Thread {
+impl<const MaxHistory: usize> Thread<MaxHistory> {
     fn new(
         id: usize,
         seed_work: Vec<PathBuf>,
@@ -2055,8 +580,8 @@ impl Thread {
     }
 
     fn get_share_request_size(&self) -> usize {
-        let work_request_size = ((self.history.processing_rates.average.adaptor()
-            * self.history.order_times.average.adaptor())
+        let work_request_size = ((self.history.avg_processing_rate().adaptor()
+            * self.history.avg_t_order().adaptor())
         .round() as usize)
             .max(1);
         work_request_size
@@ -2075,7 +600,7 @@ impl Thread {
         thread_print!(
             self,
             "Done idling, took: {:?}",
-            self.history.idle_times.inner.last().map(|t| t.absolute())
+            self.history.t_idle.last().map(|t| t.absolute())
         );
         shared_work
     }
@@ -2166,10 +691,10 @@ impl Thread {
             self.comms
                 .result_sender
                 .send(WorkResults {
-                    avg_task_time: self.history.order_times.average,
-                    avg_idle_time: self.history.idle_times.average,
+                    avg_t_order: self.history.avg_t_order(),
+                    avg_t_idle: self.history.avg_t_idle(),
                     max_dir_size: self.max_dir_size,
-                    avg_processing_rate: self.history.processing_rates.average,
+                    avg_processing_rate: self.history.avg_processing_rate(),
                     newly_processed,
                     in_flight: self.in_flight(),
                 })
@@ -2267,8 +792,8 @@ impl ThreadHandle {
         let results: Vec<WorkResults> = self.comms.result_receiver.try_iter().collect();
         if results.len() > 0 {
             let WorkResults {
-                avg_task_time,
-                avg_idle_time,
+                avg_t_order: avg_task_time,
+                avg_t_idle: avg_idle_time,
                 avg_processing_rate,
                 newly_processed,
                 max_dir_size,
@@ -2325,95 +850,6 @@ impl ThreadHandle {
 //     processing_rate / max_processing_rate
 // }
 
-trait FindMaxMin
-where
-    Self: IntoIterator + Sized,
-    <Self as IntoIterator>::Item: PartialOrd + Copy,
-{
-    fn find_max(
-        self,
-        default_for_max: <Self as IntoIterator>::Item,
-    ) -> <Self as IntoIterator>::Item {
-        self.into_iter()
-            .max_by(|p, q| p.partial_cmp(q).unwrap_or(Ordering::Less))
-            .unwrap_or(default_for_max)
-    }
-    fn find_min(
-        self,
-        default_for_min: <Self as IntoIterator>::Item,
-    ) -> <Self as IntoIterator>::Item {
-        self.into_iter()
-            .min_by(|p, q| p.partial_cmp(q).unwrap_or(Ordering::Less))
-            .unwrap_or(default_for_min)
-    }
-}
-
-impl<'a, T> FindMaxMin for &'a Vec<T> where T: PartialOrd + Copy {}
-
-struct AvgInfoSummary<T>
-where
-    T: HistoryNum,
-{
-    max: Option<T>,
-    min: Option<T>,
-    total: T,
-}
-
-impl<T, I> From<I> for AvgInfoSummary<T>
-where
-    T: Averageable + Debug + Copy + Clone,
-    I: Iterator<Item = AvgInfo<T>>,
-{
-    fn from(info_vec: I) -> Self {
-        let data: Vec<T> = info_vec.map(|x| x.data).collect();
-        Self {
-            max: data
-                .iter()
-                .copied()
-                .max_by(|p, q| p.partial_cmp(&q).unwrap_or(Ordering::Less)),
-            min: data
-                .iter()
-                .copied()
-                .min_by(|p, q| p.partial_cmp(&q).unwrap_or(Ordering::Greater)),
-            total: data
-                .iter()
-                .copied()
-                .fold(T::default(), |p, q| p.increment(q)),
-        }
-    }
-}
-
-struct AvgInfoWithSummaries {
-    // processing_rates: Vec<AvgInfo<AdaptedProcessingRate>>,
-    // task_times: Vec<AvgInfo<AdaptedDuration>>,
-    // idle_times: Vec<AvgInfo<AdaptedDuration>>,
-    summary_processing_rates: AvgInfoSummary<AdaptedF64>,
-    summary_task_times: AvgInfoSummary<TimeSpan>,
-    summary_idle_times: AvgInfoSummary<TimeSpan>,
-}
-
-impl From<Vec<AvgInfoBundle>> for AvgInfoWithSummaries {
-    fn from(avg_info_bundle: Vec<AvgInfoBundle>) -> Self {
-        let processing_rates: Vec<AvgInfo<AdaptedF64>> =
-            avg_info_bundle.iter().map(|x| x.processing_rate).collect();
-        let task_times: Vec<AvgInfo<TimeSpan>> =
-            avg_info_bundle.iter().map(|x| x.task_time).collect();
-        let idle_times: Vec<AvgInfo<TimeSpan>> =
-            avg_info_bundle.iter().map(|x| x.idle_time).collect();
-        let summary_processing_rates = processing_rates.iter().copied().into();
-        let summary_task_times = task_times.iter().copied().into();
-        let summary_idle_times = idle_times.iter().copied().into();
-        Self {
-            // processing_rates,
-            // task_times,
-            // idle_times,
-            summary_processing_rates,
-            summary_task_times,
-            summary_idle_times,
-        }
-    }
-}
-
 enum RedistributeResult {
     SurplusRequestsSent,
     SurplusesDistributed,
@@ -2421,7 +857,7 @@ enum RedistributeResult {
     NoPathsInFlight,
 }
 
-impl Executor {
+impl<const MaxHistory: usize> Executor<MaxHistory> {
     fn new(mut seed: Vec<PathBuf>, verbose: bool) -> Self {
         let (print_sender, print_receiver) = if verbose {
             let (print_sender, print_receiver) = mpsc::channel();
@@ -2961,7 +1397,8 @@ impl Executor {
 
 fn main() {
     let start = Instant::now();
-    let manager = Executor::new(vec!["C:\\".into(), "A:\\".into(), "B:\\".into()], false);
+    let manager: Executor<MAX_HISTORY> =
+        Executor::new(vec!["C:\\".into(), "A:\\".into(), "B:\\".into()], false);
     let result = manager.execute().unwrap();
     println!("Final max dir entry count: {}", result);
     println!("Took {}.", start.elapsed().custom_display());
