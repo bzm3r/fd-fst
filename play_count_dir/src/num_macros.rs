@@ -3,10 +3,10 @@ macro_rules! standardize_auto_params {
     (
         [$macro_id:ident]
         [
-            (
-                $source:ident$(($($source_params:tt)+))?,
-                $target:ident$(($($target_params:tt)+))?
-            )
+            {
+                ($source:ident$(<$($source_params:ident),+>)?)
+                ($target:ident$(<$($target_params:ident),+>)?)
+            }
             $((impl_params: $($impl_params:tt)+))?
             $(( where $($where_args:tt)+))?
         ]
@@ -15,11 +15,11 @@ macro_rules! standardize_auto_params {
         $macro_id!(
             @standardized
             [
-                (
-                    $source$(($($source_params)+))?,
-                    $target$(($($target_params)+))?
-                )
-                (impl_params: $($($impl_params)+,)? $($($source_params)+,)? $($($target_params)+)?)
+                {
+                    ($source$(<$($source_params),+>)?)
+                    ($target$(<$($target_params),+>)?)
+                }
+                (impl_params: $($($impl_params)+,)? $($($source_params,)+)? $($($target_params,)+)?)
                 $(( where $($where_args)+))?
             ]
             $($rest)*
@@ -28,7 +28,7 @@ macro_rules! standardize_auto_params {
     (
         [$macro_id:ident]
         [
-            $self:ident$(($($self_params:tt)+))?
+            ($self:ident$(<$($self_params:ident),+>)?)
             $((impl_params: $($impl_params:tt)+))?
             $(( where $($where_args:tt)+))?
         ]
@@ -37,11 +37,11 @@ macro_rules! standardize_auto_params {
         $macro_id!(
             @standardized
             [
-                (
-                    Self,
-                    $self$(($($self_params)+))?
-                )
-                (impl_params: $($($impl_params)+,)? $($($self_params)+)?)
+                {
+                    (Self)
+                    ($self$(<$($self_params),+>)?)
+                }
+                (impl_params: $($($impl_params)+,)? $($($self_params,)+)?)
                 $(( where $($where_args)+))?
             ]
             $($rest)*
@@ -54,22 +54,22 @@ macro_rules! auto_from_num {
     (
         @standardized
         [
-            (
-                $source:ident$(($($source_params:tt)+))?,
-                $target:ident$(($($target_params:tt)+))?
-            )
+            {
+                ($source:ident$(<$($source_params:ident),+>)?)
+                ($target:ident$(<$($target_params:ident),+>)?)
+            }
             (impl_params: $($($impl_params:tt)+)?)
             $(( where $($where_args:tt)+))?
         ]
         trivial
     ) => {
         impl$(<$($impl_params)+>)?
-            FromNum<$source$(<$($source_params)+>)?>
+            FromNum<$source$(<$($source_params,)+>)?>
                 for
-            $target$(<$($target_params)+>)?
+            $target$(<$($target_params,)+>)?
         $(where $($where_args)+)? {
             #[inline]
-            fn from_num(value: $source$(<$($source_params)+>)?) -> Self {
+            fn from_num(value: $source$(<$($source_params,)+>)?) -> Self {
                 value
             }
         }
@@ -77,22 +77,22 @@ macro_rules! auto_from_num {
     (
         @standardized
         [
-            (
-                $source:ident$(($($source_params:tt)+))?,
-                $target:ident$(($($target_params:tt)+))?
-            )
+            {
+                ($source:ident$(<$($source_params:ident),+>)?)
+                ($target:ident$(<$($target_params:ident),+>)?)
+            }
             (impl_params: $($($impl_params:tt)+)?)
             $(( where $($where_args:tt)+))?
         ]
         primitive
     ) => {
         impl$(<$($impl_params)+>)?
-            FromNum<$source$(<$($source_params)+>)?>
+            FromNum<$source$(<$($source_params,)+>)?>
                 for
-            $target$(<$($target_params)+>)?
+            $target$(<$($target_params,)+>)?
         $(where $($where_args)+)? {
             #[inline]
-            fn from_num(value: $source$(<$($source_params)+>)?) -> Self {
+            fn from_num(value: $source$(<$($source_params,)+>)?) -> Self {
                 value as Self
             }
         }
@@ -100,22 +100,22 @@ macro_rules! auto_from_num {
     (
         @standardized
         [
-            (
-                $source:ident$(($($source_params:tt)+))?,
-                $target:ident$(($($target_params:tt)+))?
-            )
+            {
+                ($source:ident$(<$($source_params:ident),+>)?)
+                ($target:ident$(<$($target_params:ident),+>)?)
+            }
             (impl_params: $($($impl_params:tt)+)?)
             $(( where $($where_args:tt)+))?
         ]
         |$inp:ident| { $body:expr }
     ) => {
         impl$(<$($impl_params)+>)?
-            FromNum<$source$(<$($source_params)+>)?>
+            FromNum<$source$(<$($source_params,)+>)?>
                 for
-            $target$(<$($target_params)+>)?
+            $target$(<$($target_params,)+>)?
         $(where $($where_args)+)? {
             #[inline]
-            fn from_num(value: $source$(<$($source_params)+>)?) -> Self {
+            fn from_num(value: $source$(<$($source_params,)+>)?) -> Self {
                 (|$inp: $source| -> Self { $body })(value)
             }
         }
@@ -141,24 +141,24 @@ macro_rules! auto_try_from_num {
     (
         @standardized
         [
-            (
-                $source:ident$(($($source_params:tt)+))?,
-                $target:ident$(($($target_params:tt)+))?
-            )
+            {
+                ($source:ident$(<$($source_params:ident),+>)?)
+                ($target:ident$(<$($target_params:ident),+>)?)
+            }
             (impl_params: $($($impl_params:tt)+)?)
             $(( where $($where_args:tt)+))?
         ]
         (|$inp:ident| { $body:expr })
     ) => {
         impl$(<$($impl_params)+>)?
-            crate::num_conv::TryFromNum<$source$(<$($source_params)+>)?>
+            crate::num_conv::TryFromNum<$source$(<$($source_params,)+>)?>
                 for
-            $target$(<$($target_params)+>)?
+            $target$(<$($target_params,)+>)?
         $(where $($where_args)+)? {
             #[inline]
-            fn try_from_num(source: $source$(<$($source_params)+>)?) -> NumResult<Self> {
+            fn try_from_num(source: $source$(<$($source_params,)+>)?) -> NumResult<Self> {
                 (
-                    |   $inp: $source$(<$($source_params)+>)?  | -> NumResult<Self> {
+                    |   $inp: $source$(<$($source_params),+>)?  | -> NumResult<Self> {
                         $body
                     }
                 )(source)
@@ -168,32 +168,32 @@ macro_rules! auto_try_from_num {
     (
         @standardized
         [
-            (
-                $source:ident$(($($source_params:tt)+))?,
-                $target:ident$(($($target_params:tt)+))?
-            )
+            {
+                ($source:ident$(<$($source_params:ident),+>)?)
+                ($target:ident$(<$($target_params:ident),+>)?)
+            }
             (impl_params: $($($impl_params:tt)+)?)
             $(( where $($where_args:tt)+))?
         ]
     ) => {
         impl$(<$($impl_params)+>)?
-            crate::num_conv::TryFromNum<$source$(<$($source_params)+>)?>
+            crate::num_conv::TryFromNum<$source$(<$($source_params,)+>)?>
                 for
-            $target$(<$($target_params)+>)?
+            $target$(<$($target_params,)+>)?
         $(where $($where_args)+)? {
             #[inline]
-            fn try_from_num(source: $source$(<$($source_params)+>)?) -> NumResult<Self> {
+            fn try_from_num(source: $source$(<$($source_params,)+>)?) -> NumResult<Self> {
                 <$source as crate::num::Testable>::test_all(&source)
-                    .map(|&s| <Self as FromNum<$source$(<$($source_params)+>)?>>::from_num(s))
+                    .map(|&s| <Self as FromNum<$source$(<$($source_params,)+>)?>>::from_num(s))
             }
         }
     };
     (
         [
-            (
-                $source:ident$(($($source_params:tt)+))?,
-                $target:ident$(($($target_params:tt)+))?
-            )
+            {
+                ($source:ident$(<$($source_params:ident),+>)?)
+                ($target:ident$(<$($target_params:ident),+>)?)
+            }
             $((impl_params: $($impl_params:tt)+))?
             $(( where $($where_args:tt)+))?
         ]
@@ -202,10 +202,10 @@ macro_rules! auto_try_from_num {
         standardize_auto_params!(
             [auto_try_from_num]
             [
-                (
-                    $source$(($($source_params)+))?,
-                    $target$(($($target_params)+))?
-                )
+                {
+                    ($source$(<$($source_params),+>)?)
+                    ($target$(<$($target_params),+>)?)
+                }
                 $((impl_params: $($impl_params)+))?
                 $(( where $($where_args)+))?
             ]
@@ -277,15 +277,54 @@ macro_rules! auto_basic_num {
     };
 }
 
+macro_rules! auto_basic_num2 {
+    (
+        @standardized
+        [
+            $($ty_info:tt)*
+        ]
+        $(($test:ident:[$($args:tt)*]))*
+    ) => {
+        auto_from_num!(
+            @standardized
+            [
+                $($ty_info)*
+            ]
+            trivial
+        );
+        multi_auto_test2!(
+            @standardized
+            [
+                $($ty_info)*
+            ]
+            $(($test:[$($args)*]))*
+        );
+        // auto_try_from_num!(
+        //     @standardized
+        //     [
+        //         $($ty_info)*
+        //     ]
+        // );
+    };
+    (
+        $($rest:tt)*
+    ) => {
+        standardize_auto_params!(
+            [ auto_basic_num2 ]
+            $($rest)*
+        );
+    };
+}
+
 //#[macro_export]
 macro_rules! auto_test {
     (
         @standardized
         [
-            (
-                $ignore:ident$(($($ignore_params:tt)+))?,
-                $self:ident$(($($params:tt)+))?
-            )
+            {
+                ($ignore:ident$(<$($ignore_params:ident),+>)?)
+                ($self:ident$(<$($params:ident),+>)?)
+            }
             (impl_params: $($($impl_params:tt)+)?)
             $(( where $($where_args:tt)+))?
         ]
@@ -294,10 +333,10 @@ macro_rules! auto_test {
         auto_test!(
             @standardized
             [
-                (
-                    $ignore$(($($ignore_params)+))?,
-                    $self$(($($params)+))?
-                )
+                {
+                    ($ignore$(<$($ignore_params),+>)?)
+                    ($self$(<$($params),+>)?)
+                }
                 (impl_params: $($($impl_params)+)?)
                 $(( where $($where_args)+))?
             ]
@@ -313,10 +352,10 @@ macro_rules! auto_test {
     (
         @standardized
         [
-            (
-                $ignore:ident$(($($ignore_params:tt)+))?,
-                $self:ident$(($($params:tt)+))?
-            )
+            {
+                ($ignore:ident$(<$($ignore_params:ident),+>)?)
+                ($self:ident$(<$($params:ident),+>)?)
+            }
             (impl_params: $($($impl_params:tt)+)?)
             $(( where $($where_args:tt)+))?
         ]
@@ -325,10 +364,10 @@ macro_rules! auto_test {
         auto_test!(
             @standardized
             [
-                (
-                    $ignore$(($($ignore_params)+))?,
-                    $self$(($($params)+))?
-                )
+                {
+                    ($ignore$(<$($ignore_params),+>)?)
+                    ($self$(<$($params),+>)?)
+                }
                 (impl_params: $($($impl_params)+)?)
                 $(( where $($where_args)+))?
             ]
@@ -338,10 +377,10 @@ macro_rules! auto_test {
     (
         @standardized
         [
-            (
-                $ignore:ident$(($($ignore_params:tt)+))?,
-                $self:ident$(($($params:tt)+))?
-            )
+            {
+                ($ignore:ident$(<$($ignore_params:ident),+>)?)
+                ($self:ident$(<$($params:ident),+>)?)
+            }
             (impl_params: $($($impl_params:tt)+)?)
             $(( where $($where_args:tt)+))?
         ]
@@ -351,7 +390,7 @@ macro_rules! auto_test {
             impl$(<$($impl_params)+>)?
                 crate::num_check::[<  $test Test >]
                     for
-                $self$(<$($params)+>)?
+                $self$(<$($params),+>)?
             $(where $($where_args)+)?
             {
                 #[inline]
@@ -369,6 +408,104 @@ macro_rules! auto_test {
     ) => {
         standardize_auto_params!(
             [auto_test]
+            [ $($type_info)* ]
+            $($rest)*
+        );
+    };
+}
+
+macro_rules! auto_test2 {
+    (
+        @standardized
+        [
+            {
+                ($ignore:ident$(<$($ignore_params:ident),+>)?)
+                ($self:ident$(<$($params:ident),+>)?)
+            }
+            (impl_params: $($($impl_params:tt)+)?)
+            $(( where $($where_args:tt)+))?
+        ]
+        (NonNeg : [signed_num])
+    ) => {
+        auto_test2!(
+            @standardized
+            [
+                {
+                    ($ignore$(<$($ignore_params),+>)?)
+                    ($self$(<$($params),+>)?)
+                }
+                (impl_params: $($($impl_params)+)?)
+                $(( where $($where_args)+))?
+            ]
+            (NonNeg : [
+                |inp| {
+                    (!<$self as crate::signed_num::SignedNum>::negative(*inp))
+                        .then_some(inp)
+                        .ok_or(NumErr::negative(inp))
+                }
+            ])
+        );
+    };
+    (
+        @standardized
+        [
+            {
+                ($ignore:ident$(<$($ignore_params:ident),+>)?)
+                ($self:ident$(<$($params:ident),+>)?)
+            }
+            (impl_params: $($($impl_params:tt)+)?)
+            $(( where $($where_args:tt)+))?
+        ]
+        ($test:ident : [trivial])
+    ) => {
+        auto_test2!(
+            @standardized
+            [
+                {
+                    ($ignore$(<$($ignore_params),+>)?)
+                    ($self$(<$($params),+>)?)
+                }
+                (impl_params: $($($impl_params)+)?)
+                $(( where $($where_args)+))?
+            ]
+            ($test : [|inp| { Ok(inp) }])
+        );
+    };
+    (
+        @standardized
+        [
+            {
+                ($ignore:ident$(<$($ignore_params:ident),+>)?)
+                ($self:ident$(<$($params:ident),+>)?)
+            }
+            (impl_params: $($($impl_params:tt)+)?)
+            $(( where $($where_args:tt)+))?
+        ]
+        ($test:ident : [|$inp:ident| { $body:expr }])
+    ) => {
+        paste::paste! {
+            impl$(<$($impl_params)+>)?
+                crate::num_check::[<  $test Test >]
+                    for
+                $self$(<$($params),+>)?
+            $(where $($where_args)+)?
+            {
+                #[inline]
+                fn [< test_ $test:snake:lower >]<'a>(&'a self) -> NumResult<&'a Self> {
+                    // unimplemented!();
+                    (|$inp: &'a Self| -> NumResult<&'a Self> { $body })(self)
+                }
+            }
+        }
+    };
+    (
+        [
+            $($type_info:tt)*
+        ]
+        $($rest:tt)*
+    ) => {
+        standardize_auto_params!(
+            [auto_test2]
             [ $($type_info)* ]
             $($rest)*
         );
@@ -416,21 +553,61 @@ macro_rules! multi_auto_test {
     };
 }
 
+macro_rules! multi_auto_test2 {
+    (
+        [
+            $($ty_info:tt)*
+        ]
+        $($args:tt)*
+    ) => {
+        standardize_auto_params!(
+            [multi_auto_test2]
+            [
+                $($ty_info)*
+            ]
+            $($args)*
+        )
+    };
+    (
+        @standardized
+        [
+            $($ty_info:tt)*
+        ]
+    ) => {};
+    (
+        @standardized
+        [
+            $($ty_info:tt)*
+        ]
+        ($test:ident : [$($closure:tt)*])
+        $($rest:tt)*
+    ) => {
+        auto_test2!(
+            @standardized
+            [
+                $($ty_info)*
+            ]
+            ($test:[$($closure)*])
+        );
+        multi_auto_test2!(@standardized [$($ty_info)*] $($rest)*);
+    };
+}
+
 //#[macro_export]
 macro_rules! auto_abs_num {
     (
         @standardized
         [
-            (
-                $abs:ident$(($($abs_params:tt)+))?,
-                $adp:ident$(($($adp_params:tt)+))?
-            )
+            {
+                ($abs:ident$(<$($abs_params:ident),+>)?)
+                ($adp:ident$(<$($adp_params:ident),+>)?)
+            }
             (impl_params: $($($impl_params:tt)+)?)
             $(( where $($where_args:tt)+))?
         ]
     ) => {
-        impl$(<$($impl_params)+>)?
-            AbsoluteNum<$adp$(<$($adp_params)+>)?>
+        impl$(<$($impl_params),+>)?
+            AbsoluteNum<$adp$(<$($adp_params),+>)?>
                 for
             $abs$(<$($abs_params),+>)?
             $(( where $($where_args:tt)+))?
@@ -439,10 +616,10 @@ macro_rules! auto_abs_num {
     (
         @standardized
         [
-            (
-                $abs:ident$(($($abs_params:tt)+))?,
-                $adp:ident$(($($adp_params:tt)+))?
-            )
+            {
+                ($abs:ident$(<$($abs_params:ident),+>)?)
+                ($adp:ident$(<$($adp_params:ident),+>)?)
+            }
             (impl_params: $($($impl_params:tt)+)?)
             $(( where $($where_args:tt)+))?
         ]
@@ -458,10 +635,10 @@ macro_rules! auto_abs_num {
         auto_abs_num!(
             @standardized
             [
-                (
-                    $abs$(($($abs_params)+))?,
-                    $adp$(($($adp_params)+))?
-                )
+                {
+                    ($abs$(<$($abs_params),+>)?)
+                    ($adp$(<$($adp_params),+>)?)
+                }
                 (impl_params: $($($impl_params)+)?)
                 $(( where $($where_args)+))?
             ]
@@ -493,10 +670,10 @@ macro_rules! auto_abs_num {
     (
         @standardized
         [
-            (
-                $abs:ident$(($($abs_params:tt)+))?,
-                $adp:ident$(($($adp_params:tt)+))?
-            )
+            {
+                ($abs:ident$(<$($abs_params:ident),+>)?)
+                ($adp:ident$(<$($adp_params:ident),+>)?)
+            }
             (impl_params: $($($impl_params:tt)+)?)
             $(( where $($where_args:tt)+))?
         ]
@@ -506,10 +683,10 @@ macro_rules! auto_abs_num {
         auto_from_num!(
             @standardized
             [
-                (
-                    $adp$(($($adp_params)+))?,
-                    $abs$(($($abs_params)+))?
-                )
+                {
+                    ($adp$(<$($adp_params),+>)?)
+                    ($abs$(<$($abs_params),+>)?)
+                }
                 (impl_params: $($($impl_params)+)?)
                 $(( where $($where_args)+))?
             ]
@@ -518,10 +695,10 @@ macro_rules! auto_abs_num {
         auto_try_from_num!(
             @standardized
             [
-                (
-                    $adp$(($($adp_params)+))?,
-                    $abs$(($($abs_params)+))?
-                )
+                {
+                    ($adp$(<$($adp_params),+>)?)
+                    ($abs$(<$($abs_params),+>)?)
+                }
                 (impl_params: $($($impl_params)+)?)
                 $(( where $($where_args)+))?
             ]
@@ -530,10 +707,10 @@ macro_rules! auto_abs_num {
         auto_abs_num!(
             @standardized
             [
-                (
-                    $abs$(($($abs_params)+))?,
-                    $adp$(($($adp_params)+))?
-                )
+                {
+                    ($abs$(<$($abs_params),+>)?)
+                    ($adp$(<$($adp_params),+>)?)
+                }
                 (impl_params: $($($impl_params)+)?)
                 $(( where $($where_args)+))?
             ]
@@ -563,7 +740,7 @@ macro_rules! auto_abs_num {
 macro_rules! auto_div_usize {
     (
         [
-            $this:ident$(($($params:tt)+))?
+            $this:ident$(<$($params:ident),+>)?
             $(( where $($where_args:tt)+))?
         ]
         |$lhs:ident, $rhs:ident| { $body:expr }
@@ -576,7 +753,7 @@ macro_rules! auto_div_usize {
     };
     (
         [
-            $this:ident$(($($params:tt)+))?
+            $this:ident$(<$($params:ident),+>)?
             $(( where $($where_args:tt)+))?
         ]
         trivial
@@ -589,7 +766,7 @@ macro_rules! auto_div_usize {
                     [
                         |lhs: f64, rhs:f64| -> Self
                         {
-                            <$this$(<$($params)+>)?>::from_num((lhs/rhs).round())
+                            <$this$(<$($params),+>)?>::from_num((lhs/rhs).round())
                         }
                     ]
                 )
@@ -598,7 +775,7 @@ macro_rules! auto_div_usize {
     };
 }
 
-//#[macro_export]
+#[allow(unused)]
 macro_rules! map_enum_inner {
     ($enum:ident, $enum_var:ident, (|$match_var:ident : $match_ty:ty| -> $out_ty:ty { $body:expr }) ($($variant:ident),*)) => {
         match $enum_var {

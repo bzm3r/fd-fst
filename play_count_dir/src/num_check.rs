@@ -1,3 +1,4 @@
+use crate::display::CustomDisplay;
 use paste::paste;
 use std::error::Error;
 use std::fmt::Display;
@@ -19,7 +20,8 @@ pub trait NonZeroTest: Sized {
 
 macro_rules! with_num_err_vars(
     ($macro_id:ident $(; $($args:tt)+)?) => {
-        $macro_id!(variants:[Negative, NonFinite, IsZero, Conversion, Other] $(; $($args)+)? );
+        // $macro_id!(variants:[Negative, NonFinite, IsZero, Conversion, Other] $(; $($args)+)? );
+        $macro_id!(variants:[Negative, NonFinite, Conversion, Other] $(; $($args)+)? );
     }
 );
 
@@ -39,20 +41,24 @@ macro_rules! num_err_enum {
                 }
             }
 
-            pub fn map_info<F: FnOnce(&str) -> String>(&self, f: F) -> NumErr {
-                match self {
-                    $(NumErr::$variant(x) => NumErr::$variant(f(x)),)*
-                }
+            // pub fn map_info<F: FnOnce(&str) -> String>(&self, f: F) -> NumErr {
+            //     match self {
+            //         $(NumErr::$variant(x) => NumErr::$variant(f(x)),)*
+            //     }
 
-            }
+            // }
 
             paste! {
-                $(pub fn [< $variant:snake:lower >]<T: Display>(n: T) -> Self { Self::$variant(format!("{}", n)) })*
+                $(
+                    #[allow(unused)]
+                    pub fn [< $variant:snake:lower >]<T: CustomDisplay>(n: T) -> Self { Self::$variant(format!("{}", n.custom_display())) }
+                )*
             }
         }
     };
 }
 
+#[allow(unused)]
 macro_rules! num_err_new_methods {
     (variants:[$($variant:ident),*]) => {
         paste! {
@@ -66,13 +72,19 @@ macro_rules! num_err_new_methods {
 }
 
 with_num_err_vars!(num_err_enum);
+
 macro_rules! num_err_display {
     (variants:[$($variant:ident),*]) => {
         impl Display for NumErr {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> FmtRes {
-                write!(f, "{}({:?})", match self {
-                    $(NumErr::$variant(x) => stringify!($variant),)*
-                }, self.info())
+                write!(
+                    f,
+                    "{}({:?})",
+                    match self {
+                        $(NumErr::$variant(_) => stringify!($variant),)*
+                    },
+                    self.info()
+                )
             }
         }
     };

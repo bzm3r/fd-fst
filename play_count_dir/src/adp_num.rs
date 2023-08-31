@@ -1,3 +1,5 @@
+use crate::display::CustomDisplay;
+
 use crate::{
     num::Num,
     num_check::NumResult,
@@ -7,7 +9,7 @@ use crate::{
 
 pub trait AbsoluteNum<Adaptor>
 where
-    Self: Num + DivUsize + FromNum<Adaptor>,
+    Self: Num + DivUsize + FromNum<Adaptor> + CustomDisplay,
     Adaptor: AdaptorNum<Self>,
 {
 }
@@ -18,7 +20,7 @@ pub trait TakeAbsolute<Absolute> {
 
 pub trait AdaptorNum<Absolute>
 where
-    Absolute: Num + DivUsize + FromNum<Self>,
+    Absolute: Num + DivUsize + FromNum<Self> + CustomDisplay,
     Self: SignedNum + FromNum<Absolute> + TakeAbsolute<Absolute> + TryIntoNum<f64>,
 {
 }
@@ -35,7 +37,7 @@ where
 
 impl<Adaptor, Absolute> AdaptorNum<Absolute> for Adaptor
 where
-    Absolute: Num + DivUsize + FromNum<Self>,
+    Absolute: Num + DivUsize + FromNum<Self> + CustomDisplay,
     Self: SignedNum + FromNum<Absolute> + TakeAbsolute<Absolute> + TryIntoNum<f64>,
 {
 }

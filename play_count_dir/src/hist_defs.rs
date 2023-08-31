@@ -1,43 +1,42 @@
 use crate::adp_num::*;
 use crate::hist_num::HistData;
 use crate::hist_num::HistoryNum;
-use crate::history::HistoryVec;
 use crate::num_check::*;
 use crate::num_conv::*;
-use crate::MAX_HISTORY;
-use paste::paste;
 use std::time::Duration;
 
+
+
+// auto_basic_num!(
+//     [(Duration)]
+//     (NonNeg:[trivial])
+//     (Finite:[trivial])
+//     (NonZero:[trivial])
+// );
+
 auto_basic_num!(
-    [Duration]
+    [(usize)]
     (NonNeg:[trivial])
     (Finite:[trivial])
     (NonZero:[trivial])
 );
 
 auto_basic_num!(
-    [usize]
+    [(u32)]
     (NonNeg:[trivial])
     (Finite:[trivial])
     (NonZero:[trivial])
 );
 
 auto_basic_num!(
-    [u32]
-    (NonNeg:[trivial])
-    (Finite:[trivial])
-    (NonZero:[trivial])
-);
-
-auto_basic_num!(
-    [isize]
+    [(isize)]
     (NonNeg:[signed_num])
     (Finite:[trivial])
     (NonZero:[trivial])
 );
 
 auto_basic_num!(
-    [f64]
+    [(f64)]
     (NonNeg:[signed_num])
     (Finite:[|inp| { inp.is_finite().then_some(inp).ok_or(NumErr::non_finite(inp)) }])
     (NonZero:[trivial])
@@ -53,7 +52,7 @@ impl AbsF64 {
 }
 
 auto_basic_num!(
-    [AbsF64]
+    [(AbsF64)]
     (NonNeg:[|inp| { inp.test_non_neg() } ])
     (Finite:[|inp| { inp.test_finite() }])
     (NonZero:[trivial])
@@ -61,25 +60,25 @@ auto_basic_num!(
 
 impl TryFromNum<usize> for u32 {
     fn try_from_num(value: usize) -> NumResult<Self> {
-        <u32 as TryFrom<usize>>::try_from(value).map_err(|err| NumErr::conversion(err))
+        <u32 as TryFrom<usize>>::try_from(value).map_err(|err| NumErr::conversion(err.to_string()))
     }
 }
 
-auto_from_num!([(f64, usize)] | inp | { inp.round() as usize });
-auto_from_num!([(usize, f64)] primitive);
-auto_try_from_num!([(usize, f64)]);
+auto_from_num!([{ (f64)(usize) }] | inp | { inp.round() as usize });
+auto_from_num!([{(usize)(f64)}] primitive);
+auto_try_from_num!([{ (usize)(f64) }]);
 
-auto_try_from_num!([(isize, f64)]);
+auto_try_from_num!([{ (isize)(f64) }]);
 
 auto_abs_num!(
-    [(usize, isize)]
+    [{(usize)(isize)}]
     (div_usize:[trivial])
     (from_abs:[primitive])
     (from_adp:[primitive])
 );
 
 auto_abs_num!(
-    [(Duration, f64)]
+    [{(Duration)(f64)}]
     (div_usize:[
         |lhs, rhs| {
             rhs
@@ -97,7 +96,7 @@ auto_abs_num!(
 );
 
 auto_abs_num!(
-    [(AbsF64, f64)]
+    [{(AbsF64)(f64)}]
     (
         div_usize:[
             |lhs, rhs| {
@@ -139,3 +138,30 @@ impl FromNum<isize> for f64 {
 
 pub type ProcessingRate = HistData<AbsF64, f64>;
 
+auto_basic_num2!(
+    [
+        (HistData<Absolute, Adaptor>)
+        (
+            where
+                Self: crate::display::CustomDisplay,
+                Absolute: AbsoluteNum<Adaptor>,
+                Adaptor: AdaptorNum<Absolute>,
+        )
+    ]
+    (NonNeg:[|inp| { (!inp.adaptor().negative()).then_some(inp).ok_or(NumErr::negative(*inp)) }])
+    (NonZero:[|inp| { inp.absolute().test_non_zero().map(|_| inp) }])
+    (Finite:[|inp| { inp.adaptor().test_finite().map(|_| inp) } ])
+);
+
+auto_try_from_num!(
+    [
+        {
+            (HistData<Absolute, Adaptor>)
+            (f64)
+        }
+        (where
+        Absolute: AbsoluteNum<Adaptor>,
+        Adaptor: AdaptorNum<Absolute>,)
+    ]
+    (|inp| { inp.try_into_num() })
+);

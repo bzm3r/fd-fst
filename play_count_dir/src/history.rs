@@ -82,7 +82,7 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct HistoryVec<Data, const MaxLen: usize>
+pub struct HistoryVec<Data, const MAX_HISTORY: usize>
 where
     Data: HistoryNum,
 {
@@ -91,19 +91,19 @@ where
     pub average: Data,
 }
 
-impl<Data: HistoryNum, const MaxLen: usize> HistoryVec<Data, MaxLen> {
+impl<Data: HistoryNum, const MAX_HISTORY: usize> HistoryVec<Data, MAX_HISTORY> {
     pub fn last(&self) -> Option<Data> {
         self.inner.last().copied()
     }
 }
 
-impl<Data, const MaxHistory: usize> Default for HistoryVec<Data, MaxHistory>
+impl<Data, const MAX_HISTORY: usize> Default for HistoryVec<Data, MAX_HISTORY>
 where
     Data: HistoryNum,
 {
     fn default() -> Self {
         HistoryVec {
-            inner: Vec::with_capacity(MaxHistory),
+            inner: Vec::with_capacity(MAX_HISTORY),
             average: Data::default(),
         }
     }
@@ -150,12 +150,12 @@ where
 
 impl<T> Averageable for T where T: HistoryNum {}
 
-impl<Data, const MaxHistory: usize> HistoryVec<Data, MaxHistory>
+impl<Data, const MAX_HISTORY: usize> HistoryVec<Data, MAX_HISTORY>
 where
     Data: HistoryNum,
 {
     pub fn push(&mut self, k: InnerAbsolute<Data>) {
-        if self.inner.len() == MaxHistory {
+        if self.inner.len() == MAX_HISTORY {
             self.inner.pop();
         }
         self.inner.push(Data::from_absolute(k));
@@ -169,7 +169,7 @@ where
     }
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Copy, Debug)]
 pub struct AvgInfoBundle {
     pub processing_rate: AvgInfo<ProcessingRate>,
     pub task_time: AvgInfo<TimeSpan>,

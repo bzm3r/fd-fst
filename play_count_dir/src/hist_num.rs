@@ -2,8 +2,9 @@ use std::cmp::Ordering;
 
 use crate::{
     adp_num::{AbsoluteNum, AdaptorNum, DivUsize},
+    display::CustomDisplay,
     num::Num,
-    num_check::{FiniteTest, NonNegTest, NumErr, NumResult},
+    num_check::{FiniteTest, NonNegTest, NumResult},
     num_conv::{FromNum, TryIntoNum},
 };
 
@@ -51,6 +52,7 @@ where
 #[derive(Copy, Clone, Debug, Default)]
 pub struct HistData<Absolute, Adaptor>
 where
+    Self: CustomDisplay,
     Absolute: AbsoluteNum<Adaptor>,
     Adaptor: AdaptorNum<Absolute>,
 {
@@ -82,7 +84,7 @@ where
 }
 
 pub type InnerAbsolute<Adapted> = <Adapted as HistoryNum>::Absolute;
-pub type InnerAdaptor<Adapted> = <Adapted as HistoryNum>::Adaptor;
+// pub type InnerAdaptor<Adapted> = <Adapted as HistoryNum>::Adaptor;
 
 impl<Absolute, Adaptor> HistoryNum for HistData<Absolute, Adaptor>
 where
@@ -142,27 +144,3 @@ where
         self.adaptor.partial_cmp(&other.adaptor)
     }
 }
-
-auto_basic_num!(
-    [
-        HistData<Absolute, Adaptor>
-        (
-            where
-                Absolute: AbsoluteNum<Adaptor>,
-                Adaptor: AdaptorNum<Absolute>,
-        )
-    ]
-    (NonNeg:[|inp| { (!inp.adaptor().is_negative()).then_some(inp).ok_or(NumErr::Negative(inp)) }])
-    (NonZero:[|inp| { !inp.absolute().test_non_zero().map_err(|err| err.replace_inner(inp)) }])
-    (Finite:[|inp| { inp.adaptor().test_finite().map_err(|err| err.replace_inner(inp)) } ])
-);
-
-auto_try_from_num!(
-    [
-        (HistData(Absolute, Adaptor), f64)
-        (where
-        Absolute: AbsoluteNum<Adaptor>,
-        Adaptor: AdaptorNum<Absolute>,)
-    ]
-    (|inp| { f64::try_from_num(inp.adaptor()) })
-);

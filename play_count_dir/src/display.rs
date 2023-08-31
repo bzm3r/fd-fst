@@ -11,7 +11,19 @@ pub trait CustomDisplay {
     fn custom_display(&self) -> String;
 }
 
+impl CustomDisplay for String {
+    fn custom_display(&self) -> String {
+        format!("{self}")
+    }
+}
+
 impl CustomDisplay for f64 {
+    fn custom_display(&self) -> String {
+        format!("{:e}", self.round_sig_figs(4))
+    }
+}
+
+impl CustomDisplay for &f64 {
     fn custom_display(&self) -> String {
         format!("{:e}", self.round_sig_figs(4))
     }
@@ -23,7 +35,19 @@ impl CustomDisplay for Duration {
     }
 }
 
+impl CustomDisplay for &Duration {
+    fn custom_display(&self) -> String {
+        format!("{}s", self.as_secs_f64().custom_display())
+    }
+}
+
 impl CustomDisplay for usize {
+    fn custom_display(&self) -> String {
+        format!("{self}")
+    }
+}
+
+impl CustomDisplay for &usize {
     fn custom_display(&self) -> String {
         format!("{self}")
     }
@@ -32,6 +56,24 @@ impl CustomDisplay for usize {
 impl CustomDisplay for AbsF64 {
     fn custom_display(&self) -> String {
         self.value().custom_display()
+    }
+}
+
+impl CustomDisplay for &AbsF64 {
+    fn custom_display(&self) -> String {
+        self.value().custom_display()
+    }
+}
+
+impl CustomDisplay for isize {
+    fn custom_display(&self) -> String {
+        format!("{self}")
+    }
+}
+
+impl CustomDisplay for &isize {
+    fn custom_display(&self) -> String {
+        format!("{self}")
     }
 }
 

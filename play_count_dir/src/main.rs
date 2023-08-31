@@ -1,6 +1,6 @@
 // #![cfg(feature = "debug_macros")]
 #![feature(trace_macros)]
-trace_macros!(true);
+trace_macros!(false);
 
 #[macro_use]
 mod num_macros;
@@ -18,10 +18,9 @@ mod signed_num;
 use hist_defs::{ProcessingRate, TimeSpan};
 use hist_num::{HistData, HistoryNum};
 use history::{AvgInfoBundle, HistoryVec};
-use num_conv::IntoNum;
+use num_conv::{IntoNum, TryIntoNum};
 use paste::paste;
 use std::cmp::Ordering;
-use std::error::Error;
 use std::fmt::Debug;
 use std::fs::{read_dir, DirEntry};
 use std::io::Error as IoErr;
@@ -36,7 +35,7 @@ use std::time::{Duration, Instant};
 use crate::display::CustomDisplay;
 use crate::history::AvgInfoWithSummaries;
 
-pub const NUM_THREADS: usize = 8;
+pub const NUM_THREADS: usize = 1;
 pub const DEFAULT_EXECUTE_LOOP_SLEEP: Duration = Duration::from_micros(10);
 pub const UPDATE_PRINT_DELAY: Duration = Duration::from_secs(5);
 pub const DEFAULT_WORK_CHUNK_SIZE: usize = 64;
@@ -164,13 +163,13 @@ impl<T> From<SendError<T>> for WorkError {
 }
 
 #[derive(Clone, Debug, Default)]
-struct Timer<const MaxHistory: usize> {
+struct Timer {
     start: Option<Instant>,
-    history: HistoryVec<TimeSpan, MaxHistory>,
+    history: HistoryVec<TimeSpan, MAX_HISTORY>,
     total: Duration,
 }
 
-impl<const MaxHistory: usize> Timer<MaxHistory> {
+impl Timer {
     #[inline]
     fn begin(&mut self) {
         self.start.replace(Instant::now());
@@ -241,25 +240,25 @@ impl std::iter::Sum for WorkResults {
 }
 
 #[derive(Default)]
-struct ThreadHistory<const MaxHistory: usize> {
-    dirs_processed: HistoryVec<HistData<usize, isize>, MaxHistory>,
-    processing_rates: HistoryVec<ProcessingRate, MaxHistory>,
-    work_request_sizes: HistoryVec<HistData<usize, isize>, MaxHistory>,
-    t_order: Timer<MaxHistory>,
-    t_idle: Timer<MaxHistory>,
-    t_post_order: Timer<MaxHistory>,
-    start_t: Timer<MaxHistory>,
+struct ThreadHistory<const MAX_HISTORY: usize> {
+    dirs_processed: HistoryVec<HistData<usize, isize>, MAX_HISTORY>,
+    processing_rates: HistoryVec<ProcessingRate, MAX_HISTORY>,
+    work_request_sizes: HistoryVec<HistData<usize, isize>, MAX_HISTORY>,
+    t_order: Timer,
+    t_idle: Timer,
+    t_post_order: Timer,
+    start_t: Timer,
     total_processed: usize,
 }
 
-struct InfoBundle {
-    processing_rates: Option<ProcessingRate>,
-    t_order: Option<TimeSpan>,
-    t_idle: Option<TimeSpan>,
-    t_post_order: Option<TimeSpan>,
-}
+// struct InfoBundle {
+//     processing_rates: Option<ProcessingRate>,
+//     t_order: Option<TimeSpan>,
+//     t_idle: Option<TimeSpan>,
+//     t_post_order: Option<TimeSpan>,
+// }
 
-impl<const MaxHistory: usize> ThreadHistory<MaxHistory> {
+impl<const MAX_HISTORY: usize> ThreadHistory<MAX_HISTORY> {
     fn began_process(&mut self) {
         self.start_t.begin();
     }
@@ -297,23 +296,28 @@ impl<const MaxHistory: usize> ThreadHistory<MaxHistory> {
         self.t_order.history.average
     }
 
-    fn avg_t_post_order(&self) -> TimeSpan {
-        self.t_post_order.history.average
-    }
+    // fn avg_t_post_order(&self) -> TimeSpan {
+    //     self.t_post_order.history.average
+    // }
 
-    fn last(&self) -> InfoBundle {
-        InfoBundle {
-            processing_rates: self.processing_rates.last(),
-            t_order: self.t_order.history.last(),
-            t_idle: self.t_idle.history.last(),
-            t_post_order: self.t_post_order.history.last(),
-        }
-    }
+    // fn last(&self) -> InfoBundle {
+    //     InfoBundle {
+    //         processing_rates: self.processing_rates.last(),
+    //         t_order: self.t_order.history.last(),
+    //         t_idle: self.t_idle.history.last(),
+    //         t_post_order: self.t_post_order.history.last(),
+    //     }
+    // }
 }
+
+// create_paired_comms!(
+//     [handle ;  ThreadHandleComms ; (new_work, Vec<WorkSlice>), (surplus_request, usize)] <->
+//     [thread ; ThreadComms ; (status, Status), (result, WorkResults), (out_of_work, usize), (surplus_fulfill, WorkSlice) ]
+// );
 
 create_paired_comms!(
     [handle ;  ThreadHandleComms ; (new_work, Vec<WorkSlice>), (surplus_request, usize)] <->
-    [thread ; ThreadComms ; (status, Status), (result, WorkResults), (out_of_work, usize), (surplus_fulfill, WorkSlice) ]
+    [thread ; ThreadComms ; (status, Status), (result, WorkResults), (surplus_fulfill, WorkSlice) ]
 );
 
 type LockedPathBuf = Arc<RwLock<Vec<PathBuf>>>;
@@ -478,12 +482,12 @@ impl WorkBuf {
     }
 }
 
-struct Thread<const MaxHistory: usize> {
+struct Thread<const MAX_HISTORY: usize> {
     id: usize,
     comms: ThreadComms,
     printer: Printer,
     status: Status,
-    history: ThreadHistory<MaxHistory>,
+    history: ThreadHistory<MAX_HISTORY>,
     max_dir_size: usize,
     shared_from_others: Vec<usize>,
     work_buf: WorkBuf,
@@ -501,7 +505,8 @@ struct ThreadHandle {
     // shared_work: Vec<PathBuf>,
 }
 
-struct Executor<const MaxHistory: usize> {
+struct Executor {
+    verbose: bool,
     print_receiver: Option<Receiver<Vec<String>>>,
     handles: Vec<ThreadHandle>,
     max_dir_size: usize,
@@ -510,9 +515,9 @@ struct Executor<const MaxHistory: usize> {
     processed: usize,
     orders_submitted: usize,
     loop_sleep_time: Duration,
-    loop_sleep_time_history: HistoryVec<TimeSpan, MaxHistory>,
+    loop_sleep_time_history: HistoryVec<TimeSpan, MAX_HISTORY>,
     is_finished: bool,
-    unfulfilled_requests: [usize; NUM_THREADS],
+    // unfulfilled_requests: [usize; NUM_THREADS],
     available_surplus: Vec<Vec<WorkSlice>>,
 }
 
@@ -522,13 +527,21 @@ macro_rules! thread_print {
     };
 }
 
+macro_rules! main_print {
+    ($verbose:expr, $str_lit:literal$(, $($args:tt)+)?) => {
+        if $verbose {
+            println!("main: {}", format!($str_lit$(, $($args)+)?));
+        }
+    }
+}
+
 macro_rules! printer_print {
     ($printer:ident, $str_lit:literal$(, $($args:tt)+)?) => {
         $printer.push(|| format!("{}", format!($str_lit$(, $($args)+)?)));
     };
 }
 
-impl<const MaxHistory: usize> Thread<MaxHistory> {
+impl<const MAX_HISTORY: usize> Thread<MAX_HISTORY> {
     fn new(
         id: usize,
         seed_work: Vec<PathBuf>,
@@ -594,7 +607,7 @@ impl<const MaxHistory: usize> Thread<MaxHistory> {
         let request_size = self.get_share_request_size();
         thread_print!(self, "share request size: {}", request_size);
         self.history.work_request_sizes.push(request_size);
-        self.comms.out_of_work_sender.send(request_size).unwrap();
+        // self.comms.out_of_work_sender.send(request_size).unwrap();
         let shared_work = self.comms.new_work_receiver.recv().unwrap();
         self.shared_from_others.push(shared_work.len());
         thread_print!(
@@ -706,7 +719,8 @@ impl<const MaxHistory: usize> Thread<MaxHistory> {
 impl ThreadHandle {
     fn new(id: usize, seed_work: Vec<PathBuf>, print_sender: Option<Sender<Vec<String>>>) -> Self {
         let (handle_comms, process_thread_comms) = new_handle_to_thread_comms();
-        let worker = Thread::new(id, seed_work, process_thread_comms, print_sender);
+        let worker: Thread<MAX_HISTORY> =
+            Thread::new(id, seed_work, process_thread_comms, print_sender);
 
         ThreadHandle {
             comms: handle_comms,
@@ -854,11 +868,13 @@ enum RedistributeResult {
     SurplusRequestsSent,
     SurplusesDistributed,
     NoDistributionRequired,
+    #[allow(unused)]
     NoPathsInFlight,
 }
 
-impl<const MaxHistory: usize> Executor<MaxHistory> {
+impl Executor {
     fn new(mut seed: Vec<PathBuf>, verbose: bool) -> Self {
+        main_print!(verbose, "{}", "Creating new executor.");
         let (print_sender, print_receiver) = if verbose {
             let (print_sender, print_receiver) = mpsc::channel();
             (Some(print_sender), Some(print_receiver))
@@ -877,6 +893,7 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
             .collect();
 
         Self {
+            verbose,
             print_receiver,
             handles,
             max_dir_size: 0,
@@ -887,7 +904,7 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
             loop_sleep_time: DEFAULT_EXECUTE_LOOP_SLEEP,
             loop_sleep_time_history: HistoryVec::default(),
             is_finished: false,
-            unfulfilled_requests: [0; NUM_THREADS],
+            // unfulfilled_requests: [0; NUM_THREADS],
             available_surplus: vec![Vec::default(); NUM_THREADS],
         }
     }
@@ -899,16 +916,17 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
     //     self.handles.iter().map(f).collect()
     // }
 
-    fn update_unfulfilled_requests(&mut self) {
-        self.handles
-            .iter()
-            .zip(self.unfulfilled_requests.iter_mut())
-            .for_each(|(h, slot)| {
-                *slot = *slot + h.comms.out_of_work_receiver.try_iter().last().unwrap_or(0);
-            });
-    }
+    // fn update_unfulfilled_requests(&mut self) {
+    //     self.handles
+    //         .iter()
+    //         .zip(self.unfulfilled_requests.iter_mut())
+    //         .for_each(|(h, slot)| {
+    //             *slot = *slot + h.comms.out_of_work_receiver.try_iter().last().unwrap_or(0);
+    //         });
+    // }
 
     fn get_total_surplus(&self) -> usize {
+        main_print!(self.verbose, "{}", "Getting total available surplus.");
         self.available_surplus
             .iter()
             .map(|surplus_vec| {
@@ -921,6 +939,7 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
     }
 
     fn update_available_surplus(&mut self) {
+        main_print!(self.verbose, "{}", "Checking for surplus from threads.");
         self.handles
             .iter()
             .zip(self.available_surplus.iter_mut())
@@ -935,6 +954,7 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
     }
 
     fn get_surplus_of_size(&mut self, size: usize) -> Vec<WorkSlice> {
+        main_print!(self.verbose, "{}", "Carving out suprlus of size: {size}");
         let mut unfulfilled = size;
         let mut result = vec![];
         self.available_surplus = self
@@ -960,10 +980,16 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
         result
     }
 
+    #[allow(unused)]
     fn send_surplus_requests(
         &self,
         total_required: usize,
     ) -> Result<RedistributeResult, WorkError> {
+        main_print!(
+            self.verbose,
+            "{}",
+            "Sending out surplus request of total: {total_required}"
+        );
         let in_flights: Vec<usize> = self.handles.iter().map(|h| h.in_flight()).collect();
         // println!("in flights: {in_flights:?}");
         let max_in_flight: usize = in_flights.iter().max().copied().unwrap_or(0);
@@ -1010,6 +1036,7 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
     }
 
     fn update_loop_sleep_time(&mut self) {
+        main_print!(self.verbose, "{}", "Updating loop sleep time.");
         // let idle_times = self.fetch_stats(|h| h.get_avg_idle_time());
         // let min_idle_time = idle_times
         //     .iter()
@@ -1073,6 +1100,7 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
     // }
 
     fn redistribute_work(&mut self) -> Result<RedistributeResult, WorkError> {
+        main_print!(self.verbose, "{}", "Redistributing work.");
         let in_flights = self
             .handles
             .iter()
@@ -1223,6 +1251,7 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
     // }
 
     fn print_handle_avg_info(&self) {
+        main_print!(self.verbose, "{}", "Printing handle avg_info.");
         let avg_infos = self
             .handles
             .iter()
@@ -1283,6 +1312,7 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
     }
 
     fn print_status(&mut self) {
+        main_print!(self.verbose, "{}", "Printing status.");
         if self
             .last_status_print
             .map(|t| (Instant::now() - t) > UPDATE_PRINT_DELAY)
@@ -1318,9 +1348,11 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
 
             self.orders_submitted = 0;
         }
+        main_print!(self.verbose, "{}", "Finished printing status.");
     }
 
     fn handle_print_requests(&self) {
+        main_print!(self.verbose, "{}", "Handling print requests from thread.");
         if let Some(print_receiver) = self.print_receiver.as_ref() {
             match print_receiver.try_recv() {
                 Ok(print_requests) => {
@@ -1335,6 +1367,7 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
     }
 
     fn process_results(&mut self) {
+        main_print!(self.verbose, "{}", "Processing results.");
         for (max_dir_size, new_dirs_processed) in self.handles.iter_mut().filter_map(|p| {
             p.drain_results()
                 .map(|max_dir_size| (max_dir_size, p.new_dirs_processed))
@@ -1349,6 +1382,7 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
     }
 
     fn execute(mut self) -> Result<usize, WorkError> {
+        main_print!(self.verbose, "{}", "Starting execute loop!");
         self.start_time = Instant::now();
         // Initial short sleep to ensure everyone is initialized and ready;
         // TODO: replace this with a status check on each handle
@@ -1384,6 +1418,7 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
                 sleep(self.loop_sleep_time);
             }
         }
+        main_print!(self.verbose, "{}", "Joining all threads.");
         for worker in self.handles.into_iter() {
             worker.finish()
         }
@@ -1397,8 +1432,7 @@ impl<const MaxHistory: usize> Executor<MaxHistory> {
 
 fn main() {
     let start = Instant::now();
-    let manager: Executor<MAX_HISTORY> =
-        Executor::new(vec!["C:\\".into(), "A:\\".into(), "B:\\".into()], false);
+    let manager = Executor::new(vec!["C:\\".into(), "A:\\".into(), "B:\\".into()], true);
     let result = manager.execute().unwrap();
     println!("Final max dir entry count: {}", result);
     println!("Took {}.", start.elapsed().custom_display());
