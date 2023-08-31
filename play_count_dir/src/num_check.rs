@@ -20,8 +20,7 @@ pub trait NonZeroTest: Sized {
 
 macro_rules! with_num_err_vars(
     ($macro_id:ident $(; $($args:tt)+)?) => {
-        // $macro_id!(variants:[Negative, NonFinite, IsZero, Conversion, Other] $(; $($args)+)? );
-        $macro_id!(variants:[Negative, NonFinite, Conversion, Other] $(; $($args)+)? );
+        $macro_id!(variants:[Negative, NonFinite, Conversion, Zero, Other] $(; $($args)+)? );
     }
 );
 
@@ -41,12 +40,12 @@ macro_rules! num_err_enum {
                 }
             }
 
-            // pub fn map_info<F: FnOnce(&str) -> String>(&self, f: F) -> NumErr {
-            //     match self {
-            //         $(NumErr::$variant(x) => NumErr::$variant(f(x)),)*
-            //     }
+            pub fn map_info<F: FnOnce(&str) -> String>(&self, f: F) -> NumErr {
+                match self {
+                    $(NumErr::$variant(x) => NumErr::$variant(f(x)),)*
+                }
 
-            // }
+            }
 
             paste! {
                 $(

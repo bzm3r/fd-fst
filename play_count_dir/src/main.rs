@@ -2,23 +2,27 @@
 #![feature(trace_macros)]
 trace_macros!(false);
 
-#[macro_use]
-mod num_macros;
 mod adp_num;
 mod display;
 mod hist_defs;
-mod hist_num;
+mod num_hist;
 mod history;
 mod num;
+mod num_absf64;
 mod num_check;
 mod num_conv;
+mod num_duration;
+mod num_f64;
+mod num_isize;
+mod num_u32;
+mod num_usize;
 mod sig_figs;
 mod signed_num;
 
 use hist_defs::{ProcessingRate, TimeSpan};
-use hist_num::{HistData, HistoryNum};
+use num_hist::{HistData, HistoryNum};
 use history::{AvgInfoBundle, HistoryVec};
-use num_conv::{IntoNum, TryIntoNum};
+use num_conv::IntoNum;
 use paste::paste;
 use std::cmp::Ordering;
 use std::fmt::Debug;

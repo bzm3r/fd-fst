@@ -1,7 +1,7 @@
 use crate::{
     display::CustomDisplay,
     hist_defs::*,
-    hist_num::{HistoryNum, InnerAbsolute},
+    num_hist::{HistoryNum, InnerAbsolute},
     signed_num::SignedNum,
 };
 use std::fmt::Debug;

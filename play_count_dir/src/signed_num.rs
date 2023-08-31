@@ -20,32 +20,6 @@ where
     fn signum(self) -> Self;
 }
 
-impl SignedNum for f64 {
-    #[inline]
-    fn positive(self) -> bool {
-        self.is_sign_positive()
-    }
-    #[inline]
-    fn negative(self) -> bool {
-        self.is_sign_negative()
-    }
-    #[inline]
-    fn signum(self) -> Self {
-        f64::signum(self)
-    }
-}
 
-impl SignedNum for isize {
-    #[inline]
-    fn positive(self) -> bool {
-        isize::is_positive(self)
-    }
-    #[inline]
-    fn negative(self) -> bool {
-        isize::is_negative(self)
-    }
-    #[inline]
-    fn signum(self) -> Self {
-        isize::signum(self)
-    }
-}
+
+

@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use crate::{
     adp_num::{AbsoluteNum, AdaptorNum},
-    hist_defs::*,
-    hist_num::{HistData, HistoryNum},
+    num_absf64::AbsF64,
+    num_hist::{HistData, HistoryNum},
     sig_figs::RoundSigFigs,
 };
 
@@ -55,13 +55,13 @@ impl CustomDisplay for &usize {
 
 impl CustomDisplay for AbsF64 {
     fn custom_display(&self) -> String {
-        self.value().custom_display()
+        self.inner().custom_display()
     }
 }
 
 impl CustomDisplay for &AbsF64 {
     fn custom_display(&self) -> String {
-        self.value().custom_display()
+        self.inner().custom_display()
     }
 }
 

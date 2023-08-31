@@ -12,8 +12,11 @@ where
 pub trait Testable: Clone + Debug + FiniteTest + NonNegTest + NonZeroTest {
     #[inline]
     fn test_all(&self) -> NumResult<&Self> {
-        self.test_finite()
-            .and_then(|n| n.test_non_neg().and_then(|n| n.test_non_zero()))
+        self.test_finite_non_neg().and_then(|n| n.test_non_zero())
+    }
+
+    fn test_finite_non_neg(&self) -> NumResult<&Self> {
+        self.test_finite().and_then(|n| n.test_non_neg())
     }
 }
 

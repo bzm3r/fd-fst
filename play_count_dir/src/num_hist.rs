@@ -4,7 +4,7 @@ use crate::{
     adp_num::{AbsoluteNum, AdaptorNum, DivUsize},
     display::CustomDisplay,
     num::Num,
-    num_check::{FiniteTest, NonNegTest, NumResult},
+    num_check::{FiniteTest, NonNegTest, NonZeroTest, NumResult},
     num_conv::{FromNum, TryIntoNum},
 };
 
@@ -58,6 +58,45 @@ where
 {
     adaptor: Adaptor,
     absolute: Absolute,
+}
+
+impl<Absolute, Adaptor> NonZeroTest for HistData<Absolute, Adaptor>
+where
+    Absolute: AbsoluteNum<Adaptor>,
+    Adaptor: AdaptorNum<Absolute>,
+{
+    fn test_non_zero(&self) -> NumResult<&Self> {
+        self.adaptor()
+            .test_non_zero()
+            .map(|_| self)
+            .map_err(|err| err.map_info(|err| format!("{:?}: {}", self, err)))
+    }
+}
+
+impl<Absolute, Adaptor> NonNegTest for HistData<Absolute, Adaptor>
+where
+    Absolute: AbsoluteNum<Adaptor>,
+    Adaptor: AdaptorNum<Absolute>,
+{
+    fn test_non_neg(&self) -> NumResult<&Self> {
+        self.adaptor()
+            .test_non_neg()
+            .map(|_| self)
+            .map_err(|err| err.map_info(|err| format!("{:?}: {}", self, err)))
+    }
+}
+
+impl<Absolute, Adaptor> FiniteTest for HistData<Absolute, Adaptor>
+where
+    Absolute: AbsoluteNum<Adaptor>,
+    Adaptor: AdaptorNum<Absolute>,
+{
+    fn test_finite(&self) -> NumResult<&Self> {
+        self.absolute()
+            .test_finite()
+            .map(|_| self)
+            .map_err(|err| err.map_info(|err| format!("{:?}: {}", self, err)))
+    }
 }
 
 impl<Absolute, Adaptor> FromNum<HistData<Absolute, Adaptor>> for Adaptor
