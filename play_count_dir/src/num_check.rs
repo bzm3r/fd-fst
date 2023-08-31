@@ -1,6 +1,6 @@
-use crate::display::CustomDisplay;
 use paste::paste;
 use std::error::Error;
+use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Result as FmtRes;
 
@@ -50,7 +50,7 @@ macro_rules! num_err_enum {
             paste! {
                 $(
                     #[allow(unused)]
-                    pub fn [< $variant:snake:lower >]<T: CustomDisplay>(n: T) -> Self { Self::$variant(format!("{}", n.custom_display())) }
+                    pub fn [< $variant:snake:lower >]<T: Debug>(n: T) -> Self { Self::$variant(format!("{:?}", n)) }
                 )*
             }
         }

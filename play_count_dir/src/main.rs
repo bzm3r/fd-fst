@@ -1,11 +1,11 @@
 // #![cfg(feature = "debug_macros")]
+#![allow(unused)]
 #![feature(trace_macros)]
 trace_macros!(false);
 
 mod adp_num;
 mod display;
 mod hist_defs;
-mod num_hist;
 mod history;
 mod num;
 mod num_absf64;
@@ -13,6 +13,7 @@ mod num_check;
 mod num_conv;
 mod num_duration;
 mod num_f64;
+mod num_hist;
 mod num_isize;
 mod num_u32;
 mod num_usize;
@@ -20,11 +21,10 @@ mod sig_figs;
 mod signed_num;
 
 use hist_defs::{ProcessingRate, TimeSpan};
-use num_hist::{HistData, HistoryNum};
 use history::{AvgInfoBundle, HistoryVec};
 use num_conv::IntoNum;
+use num_hist::{HistData, HistoryNum};
 use paste::paste;
-use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::fs::{read_dir, DirEntry};
 use std::io::Error as IoErr;
@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 use crate::display::CustomDisplay;
 use crate::history::AvgInfoWithSummaries;
 
-pub const NUM_THREADS: usize = 1;
+pub const NUM_THREADS: usize = 3;
 pub const DEFAULT_EXECUTE_LOOP_SLEEP: Duration = Duration::from_micros(10);
 pub const UPDATE_PRINT_DELAY: Duration = Duration::from_secs(5);
 pub const DEFAULT_WORK_CHUNK_SIZE: usize = 64;
@@ -197,7 +197,7 @@ impl Timer {
 #[derive(Clone, Debug)]
 struct WorkResults {
     avg_t_order: TimeSpan,
-    avg_t_idle: TimeSpan,
+    avg_t_waiting: TimeSpan,
     avg_processing_rate: ProcessingRate,
     newly_processed: usize,
     max_dir_size: usize,
@@ -208,7 +208,7 @@ impl Default for WorkResults {
     fn default() -> Self {
         WorkResults {
             avg_t_order: TimeSpan::default(),
-            avg_t_idle: TimeSpan::default(),
+            avg_t_waiting: TimeSpan::default(),
             avg_processing_rate: 0.0.into_num(),
             newly_processed: 0,
             in_flight: 0,
@@ -221,14 +221,14 @@ impl WorkResults {
     fn merge(mut self, next: WorkResults) -> Self {
         let WorkResults {
             avg_t_order: avg_task_time,
-            avg_t_idle: avg_idle_time,
+            avg_t_waiting: avg_idle_time,
             avg_processing_rate,
             newly_processed: dirs_processed,
             max_dir_size,
             in_flight,
         } = next;
         self.avg_t_order = avg_task_time;
-        self.avg_t_idle = avg_idle_time;
+        self.avg_t_waiting = avg_idle_time;
         self.avg_processing_rate = avg_processing_rate;
         self.newly_processed = self.newly_processed + dirs_processed;
         self.max_dir_size = self.max_dir_size.max(max_dir_size);
@@ -249,7 +249,7 @@ struct ThreadHistory<const MAX_HISTORY: usize> {
     processing_rates: HistoryVec<ProcessingRate, MAX_HISTORY>,
     work_request_sizes: HistoryVec<HistData<usize, isize>, MAX_HISTORY>,
     t_order: Timer,
-    t_idle: Timer,
+    t_waiting_for_work: Timer,
     t_post_order: Timer,
     start_t: Timer,
     total_processed: usize,
@@ -267,13 +267,13 @@ impl<const MAX_HISTORY: usize> ThreadHistory<MAX_HISTORY> {
         self.start_t.begin();
     }
 
-    fn began_idling(&mut self) {
+    fn began_waiting(&mut self) {
         self.t_post_order.end();
-        self.t_idle.begin();
+        self.t_waiting_for_work.begin();
     }
 
     fn began_order(&mut self) {
-        self.t_idle.end();
+        self.t_waiting_for_work.end();
         self.t_post_order.end();
         self.t_order.begin();
     }
@@ -292,8 +292,8 @@ impl<const MAX_HISTORY: usize> ThreadHistory<MAX_HISTORY> {
         self.processing_rates.average
     }
 
-    fn avg_t_idle(&self) -> TimeSpan {
-        self.t_idle.history.average
+    fn avg_t_waiting(&self) -> TimeSpan {
+        self.t_waiting_for_work.history.average
     }
 
     fn avg_t_order(&self) -> TimeSpan {
@@ -399,10 +399,11 @@ impl WorkSlice {
     }
 }
 
-#[allow(unused)]
 // TODO: handle error dirs
 struct ErrorDir {
+    #[allow(unused)]
     err: IoErr,
+    #[allow(unused)]
     path: PathBuf,
 }
 
@@ -605,9 +606,8 @@ impl<const MAX_HISTORY: usize> Thread<MAX_HISTORY> {
     }
 
     fn get_shared_work(&mut self) -> Vec<WorkSlice> {
-        self.history.began_idling();
-        thread_print!(self, "Began idling!");
-        self.comms.status_sender.send(Status::Idle).unwrap();
+        self.history.began_waiting();
+        thread_print!(self, "Began waiting for work!");
         let request_size = self.get_share_request_size();
         thread_print!(self, "share request size: {}", request_size);
         self.history.work_request_sizes.push(request_size);
@@ -617,7 +617,7 @@ impl<const MAX_HISTORY: usize> Thread<MAX_HISTORY> {
         thread_print!(
             self,
             "Done idling, took: {:?}",
-            self.history.t_idle.last().map(|t| t.absolute())
+            self.history.t_waiting_for_work.last().map(|t| t.absolute())
         );
         shared_work
     }
@@ -698,6 +698,7 @@ impl<const MAX_HISTORY: usize> Thread<MAX_HISTORY> {
             }
             // println!("Non printer: finished task...");
             self.history.began_post_order(newly_processed);
+            self.comms.status_sender.send(Status::Idle).unwrap();
             if let Some(surplus_request) = self.comms.surplus_request_receiver.try_iter().last() {
                 thread_print!(
                     self,
@@ -709,7 +710,7 @@ impl<const MAX_HISTORY: usize> Thread<MAX_HISTORY> {
                 .result_sender
                 .send(WorkResults {
                     avg_t_order: self.history.avg_t_order(),
-                    avg_t_idle: self.history.avg_t_idle(),
+                    avg_t_waiting: self.history.avg_t_waiting(),
                     max_dir_size: self.max_dir_size,
                     avg_processing_rate: self.history.avg_processing_rate(),
                     newly_processed,
@@ -811,7 +812,7 @@ impl ThreadHandle {
         if results.len() > 0 {
             let WorkResults {
                 avg_t_order: avg_task_time,
-                avg_t_idle: avg_idle_time,
+                avg_t_waiting: avg_idle_time,
                 avg_processing_rate,
                 newly_processed,
                 max_dir_size,
@@ -872,14 +873,14 @@ enum RedistributeResult {
     SurplusRequestsSent,
     SurplusesDistributed,
     NoDistributionRequired,
-    #[allow(unused)]
     NoPathsInFlight,
 }
 
 impl Executor {
-    fn new(mut seed: Vec<PathBuf>, verbose: bool) -> Self {
-        main_print!(verbose, "{}", "Creating new executor.");
-        let (print_sender, print_receiver) = if verbose {
+    fn new(mut seed: Vec<PathBuf>, verbosity: Verbosity) -> Self {
+        main_print!(verbosity.main, "{}", "Creating new executor.");
+        let (print_sender, print_receiver) = if verbosity.thread {
+            println!("creating thread printer");
             let (print_sender, print_receiver) = mpsc::channel();
             (Some(print_sender), Some(print_receiver))
         } else {
@@ -897,7 +898,7 @@ impl Executor {
             .collect();
 
         Self {
-            verbose,
+            verbose: verbosity.main,
             print_receiver,
             handles,
             max_dir_size: 0,
@@ -984,60 +985,59 @@ impl Executor {
         result
     }
 
-    #[allow(unused)]
-    fn send_surplus_requests(
-        &self,
-        total_required: usize,
-    ) -> Result<RedistributeResult, WorkError> {
-        main_print!(
-            self.verbose,
-            "{}",
-            "Sending out surplus request of total: {total_required}"
-        );
-        let in_flights: Vec<usize> = self.handles.iter().map(|h| h.in_flight()).collect();
-        // println!("in flights: {in_flights:?}");
-        let max_in_flight: usize = in_flights.iter().max().copied().unwrap_or(0);
-        // println!("max in flight: {max_in_flight:?}");
-        if max_in_flight > 0 && total_required > 0 {
-            let mut remaining = total_required;
-            let mut handle_info: Vec<(usize, usize, f64)> = self
-                .handles
-                .iter()
-                .enumerate()
-                .zip(in_flights.into_iter())
-                .map(|((ix, h), in_flight)| {
-                    (
-                        ix,
-                        in_flight,
-                        h.get_avg_info().processing_rate.data.adaptor(),
-                    )
-                })
-                .collect();
-            handle_info.sort_unstable_by(|p, q| {
-                (p.1 as f64 / p.2)
-                    .partial_cmp(&(q.1 as f64 / q.2))
-                    .unwrap_or(Ordering::Less)
-            });
-            // println!("sorted handles with pr: {handle_info:?}");
-            for (ix, in_flight, _) in handle_info.into_iter() {
-                if remaining == 0 {
-                    break;
-                } else {
-                    if in_flight > 0 {
-                        let request_size = (((in_flight as f64 / max_in_flight as f64)
-                            * total_required as f64)
-                            .round() as usize)
-                            .min(remaining);
-                        self.handles[ix].dispatch_surplus_request(request_size)?;
-                        remaining -= request_size;
-                    }
-                }
-            }
-            Ok(RedistributeResult::SurplusRequestsSent)
-        } else {
-            Ok(RedistributeResult::NoPathsInFlight)
-        }
-    }
+    // fn send_surplus_requests(
+    //     &self,
+    //     total_required: usize,
+    // ) -> Result<RedistributeResult, WorkError> {
+    //     main_print!(
+    //         self.verbose,
+    //         "{}",
+    //         "Sending out surplus request of total: {total_required}"
+    //     );
+    //     let in_flights: Vec<usize> = self.handles.iter().map(|h| h.in_flight()).collect();
+    //     // println!("in flights: {in_flights:?}");
+    //     let max_in_flight: usize = in_flights.iter().max().copied().unwrap_or(0);
+    //     // println!("max in flight: {max_in_flight:?}");
+    //     if max_in_flight > 0 && total_required > 0 {
+    //         let mut remaining = total_required;
+    //         let mut handle_info: Vec<(usize, usize, f64)> = self
+    //             .handles
+    //             .iter()
+    //             .enumerate()
+    //             .zip(in_flights.into_iter())
+    //             .map(|((ix, h), in_flight)| {
+    //                 (
+    //                     ix,
+    //                     in_flight,
+    //                     h.get_avg_info().processing_rate.data.adaptor(),
+    //                 )
+    //             })
+    //             .collect();
+    //         handle_info.sort_unstable_by(|p, q| {
+    //             (p.1 as f64 / p.2)
+    //                 .partial_cmp(&(q.1 as f64 / q.2))
+    //                 .unwrap_or(Ordering::Less)
+    //         });
+    //         // println!("sorted handles with pr: {handle_info:?}");
+    //         for (ix, in_flight, _) in handle_info.into_iter() {
+    //             if remaining == 0 {
+    //                 break;
+    //             } else {
+    //                 if in_flight > 0 {
+    //                     let request_size = (((in_flight as f64 / max_in_flight as f64)
+    //                         * total_required as f64)
+    //                         .round() as usize)
+    //                         .min(remaining);
+    //                     self.handles[ix].dispatch_surplus_request(request_size)?;
+    //                     remaining -= request_size;
+    //                 }
+    //             }
+    //         }
+    //         Ok(RedistributeResult::SurplusRequestsSent)
+    //     } else {
+    //         Ok(RedistributeResult::NoPathsInFlight)
+    //     }
+    // }
 
     fn update_loop_sleep_time(&mut self) {
         main_print!(self.verbose, "{}", "Updating loop sleep time.");
@@ -1103,45 +1103,59 @@ impl Executor {
     //     }
     // }
 
-    fn redistribute_work(&mut self) -> Result<RedistributeResult, WorkError> {
-        main_print!(self.verbose, "{}", "Redistributing work.");
-        let in_flights = self
-            .handles
-            .iter()
-            .map(|h| h.in_flight())
-            .collect::<Vec<usize>>();
-        let max_in_flights = in_flights.iter().copied().max().unwrap_or(0);
-        if max_in_flights > 0 {
-            Ok(RedistributeResult::NoDistributionRequired)
-        } else {
-            self.update_available_surplus();
-            let each_thread_should_have = in_flights.iter().sum::<usize>() / NUM_THREADS;
-            let mut total_surplus = self.get_total_surplus();
-            if total_surplus > 0 {
-                for (ix, in_flight) in in_flights.into_iter().enumerate() {
-                    if in_flight > each_thread_should_have {
-                        // self.handles[ix]
-                        //     .dispatch_surplus_request(in_flight - each_thread_should_have)?;
-                    } else {
-                        let surplus = self.get_surplus_of_size(each_thread_should_have);
-                        total_surplus -= surplus.len().min(total_surplus);
-                        self.handles[ix].dispatch_surplus(surplus)?;
-                    }
-                    if total_surplus == 0 {
-                        break;
-                    }
-                }
-                Ok(RedistributeResult::SurplusesDistributed)
-            } else {
-                for (ix, in_flight) in in_flights.into_iter().enumerate() {
-                    if in_flight > each_thread_should_have {
-                        self.handles[ix]
-                            .dispatch_surplus_request(in_flight - each_thread_should_have)?;
-                    }
-                }
-                Ok(RedistributeResult::SurplusRequestsSent)
-            }
-        }
+    // fn redistribute_work(&mut self) -> Result<RedistributeResult, WorkError> {
+    //     main_print!(self.verbose, "{}", "Redistributing work.");
+    //     let in_flights = self
+    //         .handles
+    //         .iter()
+    //         .map(|h| h.in_flight())
+    //         .collect::<Vec<usize>>();
+    //     let min_in_flights = in_flights.iter().copied().min().unwrap_or(0);
+    //     if min_in_flights > 0 {
+    //         main_print!(
+    //             self.verbose,
+    //             "min_in_flights > 0 {min_in_flights}; NoDistributionRequired"
+    //         );
+    //         Ok(RedistributeResult::NoDistributionRequired)
+    //     } else {
+    //         if in_flights.iter().all(|&in_flight| in_flight == 0) {
+    //             Ok(RedistributeResult::NoPathsInFlight)
+    //         } else {
+    //             self.update_available_surplus();
+    //             let each_thread_should_have = in_flights.iter().sum::<usize>() / NUM_THREADS;
+    //             let mut total_surplus = self.get_total_surplus();
+    //             if total_surplus > 0 {
+    //                 for (ix, in_flight) in in_flights.into_iter().enumerate() {
+    //                     if in_flight > each_thread_should_have {
+    //                         main_print!(self.verbose, "dispatch surplus request triggered (in_flight {in_flight} > each_thread_should_have {each_thread_should_have}");
+    //                         self.handles[ix]
+    //                             .dispatch_surplus_request(in_flight - each_thread_should_have)?;
+    //                     } else {
+    //                         let surplus = self.get_surplus_of_size(each_thread_should_have);
+    //                         total_surplus -= surplus.len().min(total_surplus);
+    //                         self.handles[ix].dispatch_surplus(surplus)?;
+    //                     }
+    //                     if total_surplus == 0 {
+    //                         break;
+    //                     }
+    //                 }
+    //                 Ok(RedistributeResult::SurplusesDistributed)
+    //             } else {
+    //                 for (ix, in_flight) in in_flights.into_iter().enumerate() {
+    //                     if in_flight > each_thread_should_have {
+    //                         main_print!(self.verbose, "dispatch surplus request triggered");
+    //                         self.handles[ix]
+    //                             .dispatch_surplus_request(in_flight - each_thread_should_have)?;
+    //                     }
+    //                 }
+    //                 Ok(RedistributeResult::SurplusRequestsSent)
+    //             }
+    //         }
+    //     }
+    // }
+
+    fn redistribute_work(&self) -> Result<RedistributeResult, WorkError> {
+        Ok(RedistributeResult::NoDistributionRequired)
     }
 
     // fn distribute_work(&mut self) -> Result<(), WorkError> {
@@ -1328,15 +1342,17 @@ impl Executor {
             let seconds = run_time.as_secs() % 60;
 
             self.last_status_print = now.into();
+            let processing_rate = ((self.processed as f64) / run_time.as_secs_f64()).round();
             println!(
-                "{} directories visited. {}/{} idle. Loop wait time: {}, Running for: {}:{}. Overall rate: {}",
+                "{} directories visited. {}/{} idle. Loop wait time: {}, Running for: {}:{}. Overall rate: {}. Expected remaining: {:?}",
                 self.processed,
                 self.handles.iter_mut().filter_map(|p| p.is_idle().then_some(1)).sum::<usize>(),
                 self.handles.len(),
                 self.loop_sleep_time.custom_display(),
                 minutes,
                 seconds,
-                ((self.processed as f64) / run_time.as_secs_f64()).round()
+                processing_rate,
+                Duration::from_secs_f64((1.0 / processing_rate as f64) * (1620723723 - self.processed) as f64)
             );
 
             self.print_handle_avg_info();
@@ -1434,9 +1450,20 @@ impl Executor {
 //     format!("Could not open path: {path:?} due to error {io_err}")
 // }
 
+struct Verbosity {
+    main: bool,
+    thread: bool,
+}
+
 fn main() {
     let start = Instant::now();
-    let manager = Executor::new(vec!["C:\\".into(), "A:\\".into(), "B:\\".into()], true);
+    let manager = Executor::new(
+        vec!["C:\\".into(), "A:\\".into(), "B:\\".into()],
+        Verbosity {
+            main: false,
+            thread: false,
+        },
+    );
     let result = manager.execute().unwrap();
     println!("Final max dir entry count: {}", result);
     println!("Took {}.", start.elapsed().custom_display());

@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use crate::{
     adp_num::{AbsoluteNum, AdaptorNum, DivUsize},
     display::CustomDisplay,
-    num::Num,
+    num::{Num, Testable},
     num_check::{FiniteTest, NonNegTest, NonZeroTest, NumResult},
     num_conv::{FromNum, TryIntoNum},
 };
@@ -36,8 +36,12 @@ where
     }
     fn ratio(&self, rhs: Self) -> NumResult<f64> {
         self.adaptor()
-            .try_into_num()
-            .and_then(|l| rhs.adaptor().try_into_num().map(|r| l / r))
+            .test_finite_non_zero_then_convert::<f64>()
+            .and_then(|l| {
+                rhs.adaptor()
+                    .test_finite_non_zero_then_convert::<f64>()
+                    .and_then(|r| Ok(l / r))
+            })
     }
     fn div_usize(&self, rhs: usize) -> NumResult<Self> {
         self.absolute()

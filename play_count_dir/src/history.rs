@@ -1,6 +1,7 @@
 use crate::{
     display::CustomDisplay,
     hist_defs::*,
+    num_check::NumResult,
     num_hist::{HistoryNum, InnerAbsolute},
     signed_num::SignedNum,
 };
@@ -11,22 +12,20 @@ pub trait Averageable
 where
     Self: HistoryNum,
 {
-    fn sub_then_div(&self, sub_rhs: Self, div_rhs: usize) -> Self {
-        self.difference(sub_rhs)
-            .div_usize(div_rhs)
-            .unwrap_or(Self::default())
+    fn sub_then_div(&self, sub_rhs: Self, div_rhs: usize) -> NumResult<Self> {
+        self.difference(sub_rhs).div_usize(div_rhs)
     }
 
     fn add_delta(&self, delta: Self) -> Self {
         self.increment(delta)
     }
 
-    fn increment_existing_avg(
+    fn incremdent_existing_avg(
         self,
         existing_avg: Self,
         popped: Option<Self>,
         new_n: usize,
-    ) -> Self {
+    ) -> NumResult<Self> {
         // We want to find a number delta such that delta + existing_avg is the new,
         // updated average.
 
@@ -77,7 +76,7 @@ where
         // Intriguingly, this formula also works for the case (n - 1) == 0
         let popped = popped.unwrap_or(existing_avg);
         let delta = self.sub_then_div(popped, new_n);
-        existing_avg.add_delta(delta)
+        delta.map(|d| existing_avg.add_delta(d))
     }
 }
 

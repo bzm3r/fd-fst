@@ -75,7 +75,7 @@ impl FromNum<Duration> for f64 {
 
 impl TryFromNum<f64> for f64 {
     fn try_from_num(value: f64) -> NumResult<Self> {
-        value.test_all().copied()
+        value.test_finite_non_neg().copied()
     }
 }
 
