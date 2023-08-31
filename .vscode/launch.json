@@ -1,0 +1,81 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug play_count_dir",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=play_count_dir",
+                    "--package=play_count_dir"
+                ],
+                "filter": {
+                    "name": "play_count_dir",
+                    "kind": "play_count_dir"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}/play_count_dir/"
+        },
+        // {
+        //     "type": "lldb",
+        //     "request": "launch",
+        //     "name": "Debug executable 'fd_fst'",
+        //     "cargo": {
+        //         "args": [
+        //             "build",
+        //             "--bin=fd_fst",
+        //             "--package=fd_fst"
+        //         ],
+        //         "filter": {
+        //             "name": "fd_fst",
+        //             "kind": "bin"
+        //         }
+        //     },
+        //     "args": [],
+        //     "cwd": "${workspaceFolder}"
+        // },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'play_count_dir'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=play_count_dir",
+                    "--package=play_count_dir"
+                ],
+                "filter": {
+                    "name": "play_count_dir",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}/play_count_dir"
+        },
+        // {
+        //     "type": "lldb",
+        //     "request": "launch",
+        //     "name": "Debug unit tests in executable 'fd_fst'",
+        //     "cargo": {
+        //         "args": [
+        //             "test",
+        //             "--no-run",
+        //             "--bin=fd_fst",
+        //             "--package=fd_fst"
+        //         ],
+        //         "filter": {
+        //             "name": "fd_fst",
+        //             "kind": "bin"
+        //         }
+        //     },
+        //     "args": [],
+        //     "cwd": "${workspaceFolder}"
+        // }
+    ]
+}
