@@ -1,5 +1,8 @@
+use std::cmp::Ordering;
+
 use crate::display::CustomDisplay;
 
+use crate::num_check::NumErr;
 use crate::{
     num::Num,
     num_check::NumResult,

@@ -1,6 +1,9 @@
+use rkyv::with;
+
 use crate::{
     display::CustomDisplay,
     hist_defs::*,
+    num::Num,
     num_check::NumResult,
     num_hist::{HistoryNum, InnerAbsolute},
     signed_num::SignedNum,
@@ -81,32 +84,56 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct HistoryVec<Data, const MAX_HISTORY: usize>
+pub struct HistoryVec<Data>
 where
     Data: HistoryNum,
 {
-    pub inner: Vec<Data>,
-    // current_sum: T,
+    inner: Vec<Data>,
     pub average: Data,
+    capacity: usize,
 }
 
-impl<Data: HistoryNum, const MAX_HISTORY: usize> HistoryVec<Data, MAX_HISTORY> {
+pub trait HasHistory<Data: HistoryNum> {
+    fn history_vec(&self) -> &HistoryVec<Data>;
+
+    #[inline]
+    fn last(&self) -> Data {
+        self.history_vec().inner.last().copied().unwrap_or_default()
+    }
+
+    #[inline]
+    fn average(&self) -> Data {
+        self.history_vec().average
+    }
+}
+
+impl<Data: HistoryNum> HasHistory<Data> for HistoryVec<Data> {
+    #[inline]
+    fn history_vec(&self) -> &HistoryVec<Data> {
+        &self
+    }
+}
+
+impl<Data: HistoryNum> HistoryVec<Data> {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            inner: Vec::with_capacity(capacity),
+            average: Data::default(),
+            capacity,
+        }
+    }
+
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    #[inline]
     pub fn last(&self) -> Option<Data> {
         self.inner.last().copied()
     }
 }
 
-impl<Data, const MAX_HISTORY: usize> Default for HistoryVec<Data, MAX_HISTORY>
-where
-    Data: HistoryNum,
-{
-    fn default() -> Self {
-        HistoryVec {
-            inner: Vec::with_capacity(MAX_HISTORY),
-            average: Data::default(),
-        }
-    }
-}
 #[derive(Default, Clone, Copy, Debug)]
 pub struct AvgInfo<T>
 where
@@ -125,11 +152,11 @@ where
             f,
             "{:?}({}{:?})",
             self.data,
-            self.delta
-                .adaptor()
-                .positive()
-                .then_some("+")
-                .unwrap_or("-"),
+            if self.delta.adaptor().positive() {
+                "+"
+            } else {
+                "-"
+            },
             self.delta.absolute()
         )
     }
@@ -149,12 +176,12 @@ where
 
 impl<T> Averageable for T where T: HistoryNum {}
 
-impl<Data, const MAX_HISTORY: usize> HistoryVec<Data, MAX_HISTORY>
+impl<Data> HistoryVec<Data>
 where
     Data: HistoryNum,
 {
     pub fn push(&mut self, k: InnerAbsolute<Data>) {
-        if self.inner.len() == MAX_HISTORY {
+        if self.inner.len() == self.capacity() {
             self.inner.pop();
         }
         self.inner.push(Data::from_absolute(k));
@@ -252,11 +279,11 @@ where
             max: data
                 .iter()
                 .copied()
-                .max_by(|p, q| p.partial_cmp(&q).unwrap_or(Ordering::Less)),
+                .max_by(|p, q| p.partial_cmp(q).unwrap_or(Ordering::Less)),
             min: data
                 .iter()
                 .copied()
-                .min_by(|p, q| p.partial_cmp(&q).unwrap_or(Ordering::Greater)),
+                .min_by(|p, q| p.partial_cmp(q).unwrap_or(Ordering::Greater)),
             total: data
                 .iter()
                 .copied()

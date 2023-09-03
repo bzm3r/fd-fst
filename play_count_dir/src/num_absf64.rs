@@ -1,7 +1,10 @@
+use std::cmp::Ordering;
+
 use crate::{
     adp_num::{AbsoluteNum, DivUsize},
+    num::CmpWithF64,
     num_check::{FiniteTest, NonNegTest, NonZeroTest, NumErr, NumResult},
-    num_conv::FromNum,
+    num_conv::{FromNum, TryFromNum},
 };
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, PartialOrd)]
@@ -22,11 +25,21 @@ impl NonZeroTest for AbsF64 {
     }
 }
 
+impl TryFromNum<AbsF64> for f64 {
+    fn try_from_num(value: AbsF64) -> NumResult<Self> {
+        value.inner().test_finite().copied()
+    }
+}
+
 impl NonNegTest for AbsF64 {
     fn test_non_neg(&self) -> NumResult<&Self> {
-        (!(self.inner() < 0.0))
-            .then_some(self)
-            .ok_or(NumErr::negative(self))
+        <Self as CmpWithF64>::cmp_f64(self, Ordering::Less, 0.0).and_then(|x| {
+            if x {
+                Ok(self)
+            } else {
+                NumResult::Err(NumErr::negative(self))
+            }
+        })
     }
 }
 
@@ -53,7 +66,7 @@ impl FromNum<f64> for AbsF64 {
 
 impl DivUsize for AbsF64 {
     fn div_usize(&self, rhs: usize) -> NumResult<Self> {
-        self.inner().div_usize(rhs).map(|f| Self(f))
+        self.inner().div_usize(rhs).map(Self)
     }
 }
 

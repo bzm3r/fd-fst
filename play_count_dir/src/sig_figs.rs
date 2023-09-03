@@ -13,14 +13,12 @@ pub trait RoundSigFigs: Num + TryFromNum<f64> + TryIntoNum<f64> {
         let x: f64 = self.try_into_num().unwrap();
         Self::try_from_num(if x == 0. || n_sig_figs == 0 {
             0.0_f64
+        } else if let Some(delta) = Self::delta(x) {
+            let shift = n_sig_figs - delta;
+            let shift_factor = 10_f64.powi(shift);
+            (x * shift_factor).round() / shift_factor
         } else {
-            if let Some(delta) = Self::delta(x) {
-                let shift = n_sig_figs - delta;
-                let shift_factor = 10_f64.powi(shift);
-                (x * shift_factor).round() / shift_factor
-            } else {
-                0.0_f64
-            }
+            0.0_f64
         })
         .unwrap()
     }

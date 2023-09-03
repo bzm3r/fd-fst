@@ -13,7 +13,7 @@ pub trait CustomDisplay {
 
 impl CustomDisplay for String {
     fn custom_display(&self) -> String {
-        format!("{self}")
+        self.to_string()
     }
 }
 
@@ -95,7 +95,7 @@ where
         if let Some(inner) = self {
             inner.custom_display()
         } else {
-            format!("None")
+            "None".to_string()
         }
     }
 }

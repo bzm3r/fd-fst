@@ -1,5 +1,8 @@
-use crate::{num_check::NumResult, num_conv::TryIntoNum};
-use std::fmt::Debug;
+use crate::{
+    num_check::{NumErr, NumResult},
+    num_conv::TryIntoNum,
+};
+use std::{cmp::Ordering, fmt::Debug};
 
 use crate::num_check::{FiniteTest, NonNegTest, NonZeroTest};
 
@@ -58,3 +61,17 @@ impl<
     > Testable for T
 {
 }
+
+pub trait CmpWithF64
+where
+    Self: TryIntoNum<f64>,
+{
+    fn cmp_f64(&self, required: Ordering, rhs: f64) -> NumResult<bool> {
+        let lhs: f64 = self.try_into_num()?;
+        lhs.partial_cmp(&rhs)
+            .map(|ordering| ordering == required)
+            .ok_or(NumErr::Other(format!("Could not compare {lhs} with {rhs}")))
+    }
+}
+
+impl<T> CmpWithF64 for T where T: TryIntoNum<f64> {}

@@ -40,13 +40,13 @@ where
             .and_then(|l| {
                 rhs.adaptor()
                     .test_finite_non_zero_then_convert::<f64>()
-                    .and_then(|r| Ok(l / r))
+                    .map(|r| l / r)
             })
     }
     fn div_usize(&self, rhs: usize) -> NumResult<Self> {
         self.absolute()
             .div_usize(rhs)
-            .map(|abs| Self::new_same_sign(&self, abs))
+            .map(|abs| Self::new_same_sign(self, abs))
     }
     fn iter_sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.fold(Self::default(), |u, v| u.increment(v))

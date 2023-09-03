@@ -1,8 +1,8 @@
-use std::time::Duration;
+use std::{cmp::Ordering, time::Duration};
 
 use crate::{
     adp_num::{AbsoluteNum, AdaptorNum, DivUsize},
-    num::Testable,
+    num::{CmpWithF64, Testable},
     num_absf64::AbsF64,
     num_check::{FiniteTest, NonNegTest, NonZeroTest, NumErr, NumResult},
     num_conv::{FromNum, TryFromNum},
@@ -35,9 +35,13 @@ impl NonZeroTest for f64 {
 
 impl NonNegTest for f64 {
     fn test_non_neg(&self) -> NumResult<&Self> {
-        (!(*self < 0.0))
-            .then_some(self)
-            .ok_or(NumErr::negative(self))
+        <Self as CmpWithF64>::cmp_f64(self, Ordering::Less, 0.0).and_then(|x| {
+            if x {
+                Ok(self)
+            } else {
+                NumResult::Err(NumErr::negative(self))
+            }
+        })
     }
 }
 

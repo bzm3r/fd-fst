@@ -20,3 +20,6 @@ rkyv = { version = "0.7.42", default-features = false, features = [
     "std",
 ] }
 paste = "1.0.14"
+rand = { version = "0.8.5", features = ["small_rng"] }
+parking_lot = "0.12.1"
+crossbeam-channel = "0.5.8"
