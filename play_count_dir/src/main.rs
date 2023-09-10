@@ -27,8 +27,8 @@ mod signed_num;
 mod task_error;
 mod task_results;
 
-use crossbeam_channel::{Receiver, SendError, Sender, TryRecvError};
-use disk::{DiskRegistry, FoundTasks, TaskPacket};
+use crossbeam_channel::{bounded, Receiver, SendError, Sender, TryRecvError};
+use disk::{DiskRegistry, ErrorDir, FoundTasks, TaskPacket};
 use hist_defs::{ProcessingRate, TimeSpan};
 use history::{AvgInfoBundle, HistoryVec};
 use num_conv::IntoNum;
@@ -149,8 +149,8 @@ macro_rules! create_paired_comms {
             fn [< new_ $lhs_snake_name _to_ $rhs_snake_name _comms>]() ->
                 ($lhs_struct_id, $rhs_struct_id)
             {
-                $(let ([< $fid _sender>], [< $fid _receiver>]) = mpsc::channel();)+
-                $(let ([< $gid _sender>], [< $gid _receiver>]) = mpsc::channel();)+
+                $(let ([< $fid _sender>], [< $fid _receiver>]) = bounded(100);)+
+                $(let ([< $gid _sender>], [< $gid _receiver>]) = bounded(100);)+
 
                 (
                     $lhs_struct_id {
@@ -169,7 +169,7 @@ macro_rules! create_paired_comms {
 
 create_paired_comms!(
     [handle ;  ThreadHandleComms ; (new_work, Vec<FoundTasks>) ] <->
-    [thread ; ThreadComms ; (status, Status), (read_result, DiskReadResult) ]
+    [thread ; ThreadComms ; (status, Status), (read_results, WorkResult) ]
 );
 
 struct Thread {
@@ -281,11 +281,9 @@ impl Thread {
                 Err(err) => errors.push(err),
             });
         let work_result = WorkResult::summarize(&errors, &new_tasks);
-        tasks.disk.record_results(errors, new_tasks);
+        self.record_results(errors, new_tasks);
         work_result
     }
-
-    fn process_reads(&self, reads: reads) {}
 
     fn start(mut self) {
         let _start_timer = self
@@ -367,7 +365,7 @@ impl Executor {
         let registry = Arc::new(Disks::new(seed.clone()));
         let (print_sender, print_receiver) = if verbosity.thread {
             println!("creating thread printer");
-            let (print_sender, print_receiver) = mpsc::channel();
+            let (print_sender, print_receiver) = bounded(100);
             (Some(print_sender), Some(print_receiver))
         } else {
             (None, None)

@@ -2,6 +2,7 @@ use paste::paste;
 use std::{
     cell::Cell,
     time::{Duration, Instant},
+    fmt::Debug,
 };
 
 use crate::{
@@ -147,7 +148,7 @@ macro_rules! gen_field_updates {
 impl ThreadHistory {
     fn get_average<H, T>(&self, field: &CellSlot<H>) -> T
     where
-        H: HasHistory<T> + Clone,
+        H: HasHistory<T> + Clone + Debug,
         T: HistoryNum + Clone,
     {
         let history = field.take();

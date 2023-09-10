@@ -1,4 +1,7 @@
-use crate::hist_defs::{ProcessingRate, TimeSpan};
+use crate::{
+    disk::{ErrorDir, FoundTasks},
+    hist_defs::{ProcessingRate, TimeSpan},
+};
 
 #[derive(Debug, Clone)]
 pub struct WorkResult {
@@ -21,8 +24,14 @@ impl Default for WorkResult {
     }
 }
 
+pub struct ReadDirSummary {}
+
 impl WorkResult {
-    fn merge(mut self, next: WorkResult) -> Self {
+    pub fn summarize(errors: &Vec<ErrorDir>, discovered: &FoundTasks) -> ReadDirSummary {
+        unimplemented!()
+    }
+
+    pub fn merge(mut self, next: WorkResult) -> Self {
         let WorkResult {
             avg_t_order,
             avg_t_waiting,

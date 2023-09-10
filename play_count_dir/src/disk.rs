@@ -86,16 +86,16 @@ impl TaskCountVar {
 
 #[derive(Default)]
 pub struct DiskRegistry {
-    m: HashMap<u8, Arc<Disk>>,
-    v: CellSlot<Vec<Arc<Disk>>>,
+    m: HashMap<u8, Arc<DiskReader>>,
+    v: CellSlot<Vec<Arc<DiskReader>>>,
 }
 
 impl DiskRegistry {
-    fn get(&self, disk: u8) -> Option<Arc<Disk>> {
+    fn get(&self, disk: u8) -> Option<Arc<DiskReader>> {
         self.m.get(&disk).cloned()
     }
 
-    fn disks_with_highest_pressures(&self) -> Vec<Arc<Disk>> {
+    fn disks_with_highest_pressures(&self) -> Vec<Arc<DiskReader>> {
         self.sort_by_pressure();
         self.v.apply_then_restore(|v| {
             let highest = v.last().map_or(0, |arc_disk| arc_disk.pressure());
@@ -123,8 +123,8 @@ impl From<HashMap<u8, Vec<PathBuf>>> for DiskRegistry {
     fn from(mut m: HashMap<u8, Vec<PathBuf>>) -> Self {
         let m = m
             .into_iter()
-            .map(|(disk, paths)| (disk, Arc::new(Disk::new(disk, paths))))
-            .collect::<HashMap<u8, Arc<Disk>>>();
+            .map(|(disk, paths)| (disk, Arc::new(DiskReader::new(disk, paths))))
+            .collect::<HashMap<u8, Arc<DiskReader>>>();
         let v = CellSlot::new(m.values().cloned().collect());
         Self { m, v }
     }
@@ -201,7 +201,7 @@ pub type FoundTasks = Vec<PathBuf>;
 pub type TaskSlice<'a> = &'a [PathBuf];
 
 #[derive(Debug)]
-struct ErrorDir {
+pub struct ErrorDir {
     #[allow(unused)]
     err: IoErr,
     #[allow(unused)]
@@ -209,13 +209,13 @@ struct ErrorDir {
 }
 
 impl ErrorDir {
-    fn new(path: PathBuf, err: IoErr) -> Self {
+    pub fn new(path: PathBuf, err: IoErr) -> Self {
         Self { err, path }
     }
 }
 
 #[derive(Debug)]
-pub struct Disk {
+pub struct DiskReader {
     disk: u8,
     task_buf: SharedBuf<PathBuf>,
     access_mutex: Mutex<()>,
@@ -223,7 +223,7 @@ pub struct Disk {
 }
 
 pub struct TaskPacket<'a> {
-    pub disk: Arc<Disk>,
+    pub disk: Arc<DiskReader>,
     pub tasks: TaskSlice<'a>,
 }
 
@@ -231,12 +231,8 @@ pub struct DirContents {
     sub_dirs: Vec<IoResult<DirEntry>>,
 }
 
-pub struct DiskReadResults {
-    buf: FlatBuf,
-}
-
 impl<'a> TaskPacket<'a> {
-    fn new(parent: Arc<Disk>, tasks: TaskSlice) -> Self {
+    fn new(parent: Arc<DiskReader>, tasks: TaskSlice) -> Self {
         Self {
             disk: parent,
             tasks,
@@ -266,14 +262,13 @@ impl<'a> TaskPacket<'a> {
     }
 }
 
-impl Disk {
+impl DiskReader {
     fn new(disk: u8, tasks: impl IntoIterator<Item = PathBuf>) -> Self {
         Self {
             disk,
             task_buf: SharedBuf::new(tasks).into(),
             access_mutex: DiskMutex::default(),
             errors: Mutex::new(Vec::new()),
-            active_readers: RwLock::new(0),
         }
     }
 
