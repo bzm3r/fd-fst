@@ -1,7 +1,7 @@
 use crate::{
+    num::SignedNum,
     num_check::{FiniteTest, NonNegTest, NonZeroTest, NumErr, NumResult},
     num_conv::FromNum,
-    signed_num::SignedNum,
 };
 
 impl SignedNum for isize {
@@ -55,6 +55,12 @@ impl FromNum<f64> for isize {
 
 impl FromNum<usize> for isize {
     fn from_num(value: usize) -> Self {
+        value as isize
+    }
+}
+
+impl FromNum<u8> for isize {
+    fn from_num(value: u8) -> Self {
         value as isize
     }
 }

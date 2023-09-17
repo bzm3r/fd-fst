@@ -1,5 +1,10 @@
 use parking_lot::{Condvar, Mutex};
-use std::time::Duration;
+use std::{
+    sync::{atomic::AtomicU8, TryLockError},
+    time::Duration,
+};
+
+use crate::{semaphore::Semaphore, cond_lock::PredicateLockReadGuard, intervals::Interval};
 
 #[derive(Debug, Default)]
 struct CursorBuf<T> {
@@ -9,7 +14,7 @@ struct CursorBuf<T> {
 
 impl<T> CursorBuf<T> {
     #[inline]
-    fn write(&mut self, new_values: Vec<T>) {
+    unsafe fn extend(&self, new_values: Vec<T>) {
         self.buf.extend(new_values)
     }
 
@@ -41,23 +46,32 @@ impl<T> FromIterator<T> for CursorBuf<T> {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct SharedBuf<T> {
-    buf: Mutex<CursorBuf<T>>,
-    read_ready: Condvar,
+struct IntervalLocks {
+    locks: Vec<Interval>,
+    semaphore: Semaphore<usize>,
 }
 
-impl<T> SharedBuf<T> {
-    pub fn new(init: impl IntoIterator<Item = T>) -> Self {
+#[derive(Debug)]
+pub struct QBuf<T> {
+    buf: CursorBuf<T>,
+}
+
+impl<T> QBuf<T> {
+    pub fn new(init: impl IntoIterator<Item = T>, max_reads: u8, max_writes: u8) -> Self {
         Self {
             buf: Mutex::new(init.into_iter().collect()),
-            read_ready: Condvar::new(),
+            read_sem: Semaphore::new(max_reads),
+            write_sem: Semaphore::new(max_writes),
         }
     }
 
-    pub fn write(&self, items: Vec<T>) {
-        self.buf.lock().unwrap().write(items);
+    pub fn append(&self, items: Vec<T>) {
+        self.buf.lock().write(items);
         self.read_ready.notify_all();
+    }
+
+    pub fn reads_active(&self) -> u8 {
+        self.read_sem.
     }
 
     pub fn reads_available(&self) -> Option<usize> {
@@ -68,8 +82,8 @@ impl<T> SharedBuf<T> {
         }
     }
 
-    pub fn read<'a>(&'a self, at_most: Option<usize>) -> Option<&'a [T]> {
-        let mut buf_guard = self.buf.lock().unwrap();
+    pub fn read<'a>(&'a self, at_most: Option<usize>) -> QBufReadGuard<'a, [T]> {
+        let mut buf_guard = self.buf.lock();
         if buf_guard.reads_available() == 0 {
             let (buf_guard, wait_timeout) = self
                 .read_ready
@@ -86,3 +100,12 @@ impl<T> SharedBuf<T> {
         read_slice.into()
     }
 }
+
+pub struct QBufReadGuard<'a, T> {
+    resource: &'a T,
+}
+
+impl<'a, T> PredicateLockReadGuard<'a, T> for QBufReadGuard<'a, T> {
+
+}
+

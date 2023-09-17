@@ -1,14 +1,14 @@
 use paste::paste;
 use std::{
     cell::Cell,
-    time::{Duration, Instant},
     fmt::Debug,
+    time::{Duration, Instant},
 };
 
 use crate::{
-    misc_types::CellSlot,
     hist_defs::{ProcessingRate, TimeSpan},
     history::{HasHistory, HistoryVec},
+    misc_types::CellOpt,
     num::Num,
     num_conv::IntoNum,
     num_hist::{HistData, HistoryNum},
@@ -31,8 +31,8 @@ impl TimeSpanHistory {
     }
 
     #[inline]
-    fn new_celled(capacity: usize) -> CellSlot<Self> {
-        CellSlot::new(Self::new(capacity))
+    fn new_celled(capacity: usize) -> CellOpt<Self> {
+        CellOpt::new(Self::new(capacity))
     }
 
     #[inline]
@@ -83,16 +83,14 @@ impl<'a> Drop for Timer<'a> {
     }
 }
 
-
 #[derive(Default, Debug, Clone)]
 struct CurrentTimings {
-    disk_reader_wait: CellSlot<TimeSpan>,
-    disk_access_wait: CellSlot<TimeSpan>,
-    read_processing_time: CellSlot<TimeSpan>,
-    misc_time: CellSlot<TimeSpan>,
-    disk_read_time: CellSlot<TimeSpan>,
+    disk_reader_wait: CellOpt<TimeSpan>,
+    disk_access_wait: CellOpt<TimeSpan>,
+    read_processing_time: CellOpt<TimeSpan>,
+    misc_time: CellOpt<TimeSpan>,
+    disk_read_time: CellOpt<TimeSpan>,
 }
-
 
 #[derive(Default, Debug, Clone)]
 struct CompleteTimings {
@@ -119,24 +117,22 @@ impl CurrentTimings {
     }
 }
 
-
-
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct ThreadMetrics {
     history: ThreadHistory,
     curr_timings: CurrentTimings,
-    t_thread_start: CellSlot<Instant>,
+    t_thread_start: CellOpt<Instant>,
     total_processed: Cell<usize>,
 }
 
 #[derive(Default, Debug, Clone)]
 struct ThreadHistory {
-    h_processing_rate: CellSlot<HistoryVec<ProcessingRate>>,
-    h_reader_wait: CellSlot<TimeSpanHistory>,
-    h_access_wait: CellSlot<TimeSpanHistory>,
-    h_process_dirs_time: CellSlot<TimeSpanHistory>,
-    h_misc_time: CellSlot<TimeSpanHistory>,
-    h_process_tasks_time: CellSlot<TimeSpanHistory>,
+    h_processing_rate: CellOpt<HistoryVec<ProcessingRate>>,
+    h_reader_wait: CellOpt<TimeSpanHistory>,
+    h_access_wait: CellOpt<TimeSpanHistory>,
+    h_process_dirs_time: CellOpt<TimeSpanHistory>,
+    h_misc_time: CellOpt<TimeSpanHistory>,
+    h_process_tasks_time: CellOpt<TimeSpanHistory>,
 }
 
 macro_rules! gen_field_updates {
@@ -146,7 +142,7 @@ macro_rules! gen_field_updates {
 }
 
 impl ThreadHistory {
-    fn get_average<H, T>(&self, field: &CellSlot<H>) -> T
+    fn get_average<H, T>(&self, field: &CellOpt<H>) -> T
     where
         H: HasHistory<T> + Clone + Debug,
         T: HistoryNum + Clone,
@@ -157,9 +153,9 @@ impl ThreadHistory {
         r
     }
 
-    fn get_last_value<H: HasHistory<T>, T: HistoryNum>(&self, field: &CellSlot<H>) -> T
+    fn get_last_value<H: HasHistory<T>, T: HistoryNum>(&self, field: &CellOpt<H>) -> T
     where
-        H: HasHistory<T> + Clone,
+        H: HasHistory<T> + Clone + Debug,
         T: HistoryNum + Clone,
     {
         let history = field.take();
@@ -192,16 +188,6 @@ impl ThreadHistory {
         self.get_average(&self.h_process_tasks_time)
     }
 
-    fn update_field<H, T>(historical: &CellSlot<H>, next_value: <H as HasHistory>::Absolute>)
-    where
-        H: HasHistory<T> + Clone,
-        T: HistoryNum + Clone,
-    {
-        let mut updated = historical.force_take();
-        updated.history_vec().push(next_value);
-        historical.overwrite_value(updated);
-    }
-
     pub fn update(&self, dirs_processed: usize, complete_timings: CompleteTimings) {
         let ThreadHistory {
             h_processing_rate,
@@ -219,7 +205,9 @@ impl ThreadHistory {
             read_processing_time: process_tasks_time,
         } = complete_timings;
 
-        let processing_rate = complete_timings.read_processing_time / dirs_processed;
+        let processing_rate = complete_timings
+            .read_processing_time
+            .div_usize(dirs_processed);
         gen_field_updates!(
             Self [
                 h_processing_rate,
@@ -244,7 +232,7 @@ impl ThreadHistory {
 impl ThreadHistory {
     fn new(max_history: usize) -> Self {
         Self {
-            h_processing_rate: CellSlot::new(HistoryVec::new(max_history)),
+            h_processing_rate: CellOpt::new(HistoryVec::new(max_history)),
             h_reader_wait: TimeSpanHistory::new_celled(max_history),
             h_access_wait: TimeSpanHistory::new_celled(max_history),
             h_process_dirs_time: TimeSpanHistory::new_celled(max_history),
@@ -268,8 +256,8 @@ impl ThreadMetrics {
     pub fn new(max_history: usize) -> Self {
         Self {
             history: ThreadHistory::new(max_history),
-            t_thread_start: None,
-            total_processed: 0,
+            t_thread_start: CellOpt::new(Instant::now()),
+            total_processed: 0.into(),
             curr_timings: CurrentTimings::default(),
         }
     }

@@ -1,60 +1,30 @@
 use crate::{
-    hist_defs::{ProcessingRate, TimeSpan},
-    misc_types::{ArcMutex, ArcMutexFrom, ArcRwLockFrom, CellSlot},
+    arc_locks::{ArcMutex, ArcMutexFrom, ArcRwLockFrom},
+    qbuf::QBuf,
     run_info::ThreadMetrics,
-    shared_buf::SharedBuf,
-    task_results::WorkResult,
-    IoErr, IoResult,
+    semaphore::Semaphore,
 };
 use chrono::format::Item;
 use core::num;
-use fst::raw;
+use fst::{raw, Error};
 use parking_lot::{Condvar, Mutex, MutexGuard};
 use rand::{rngs::SmallRng, seq::SliceRandom, thread_rng, SeedableRng};
 use std::{
     borrow::Cow,
     cell::{Cell, UnsafeCell},
     collections::HashMap,
-    fs::{read_dir, DirEntry},
+    fs::{read_dir, DirEntry, Metadata},
     hash::Hash,
+    io::{Error as IoError, Result as IoResult},
     iter::once,
     ops::{AddAssign, Deref, DerefMut},
     path::{Path, PathBuf, Prefix},
+    rc::Rc,
     slice::SliceIndex,
     str::FromStr,
-    sync::Arc,
+    sync::{atomic::AtomicU8, Arc},
     time::Duration,
 };
-
-pub struct CondMutex<T> {
-    mutex: Mutex<T>,
-    cv: Condvar,
-}
-
-impl<T> CondMutex<T> {
-    pub fn lock<'a>(&self) -> MutexGuard<'a, T>
-    where
-        T: 'a,
-    {
-        self.mutex.lock().unwrap()
-    }
-
-    pub fn wait_for_cond<'a, P: Fn(&mut T) -> bool>(&self, cond: P) -> MutexGuard<'a, T>
-    where
-        T: 'a,
-    {
-        let mut guard = self.lock();
-        if !cond(guard.deref_mut()) {
-            self.cv.wait_while(&mut guard, cond).unwrap();
-        }
-        guard
-    }
-
-    #[inline]
-    pub fn notify_all(&self) {
-        self.cv.notify_all();
-    }
-}
 
 pub type DiskGuard<'a> = MutexGuard<'a, ()>;
 
@@ -68,17 +38,15 @@ pub struct TaskCountVar {
 
 impl TaskCountVar {
     fn notify_all(&self) {
-        *self.counter.lock().unwrap() += 1;
+        *self.counter.lock() += 1;
         self.cv.notify_all();
     }
 
     fn wait_for_ticket(&self) {
-        let mut guarded_counter = self.counter.lock().unwrap();
+        let mut guarded_counter = self.counter.lock();
         if *guarded_counter == 0 {
-            guarded_counter = self
-                .cv
-                .wait_while(guarded_counter, |counter| *counter > 0)
-                .unwrap();
+            self.cv
+                .wait_while(&mut guarded_counter, |counter| *counter > 0);
         }
         *guarded_counter -= 1;
     }
@@ -86,60 +54,64 @@ impl TaskCountVar {
 
 #[derive(Default)]
 pub struct DiskRegistry {
-    m: HashMap<u8, Arc<DiskReader>>,
-    v: CellSlot<Vec<Arc<DiskReader>>>,
+    map_repr: HashMap<u8, Rc<Disk>>,
+    vec_repr: Vec<(DiskPressure, Rc<Disk>)>,
 }
 
 impl DiskRegistry {
-    fn get(&self, disk: u8) -> Option<Arc<DiskReader>> {
-        self.m.get(&disk).cloned()
+    pub fn new(map_repr: HashMap<u8, Rc<Disk>>, vec_repr: Vec<Rc<Disk>>) -> Self {
+        let vec_repr = vec_repr
+            .into_iter()
+            .map(|disk| (disk.pressure(), disk))
+            .collect();
+        Self { map_repr, vec_repr }
+    }
+    pub fn get(&self, disk: u8) -> Option<Rc<Disk>> {
+        self.map_repr.get(&disk).cloned()
     }
 
-    fn disks_with_highest_pressures(&self) -> Vec<Arc<DiskReader>> {
-        self.sort_by_pressure();
-        self.v.apply_then_restore(|v| {
-            let highest = v.last().map_or(0, |arc_disk| arc_disk.pressure());
-            let mut high_pressures = Vec::new();
-            for disk in v.iter() {
-                if disk.pressure() == highest {
-                    high_pressures.push(disk.clone());
-                } else {
-                    break;
-                }
-            }
-            high_pressures
-        })
+    fn exists_updated_disk(&self) -> bool {
+        self.vec_repr.iter().any(|(_, disk)| disk.has_changed())
+    }
+
+    pub fn disks_by_pressure(&mut self) -> &[(usize, Rc<Disk>)] {
+        if self.exists_updated_disk() {
+            self.sort_by_pressure();
+        }
+        self.vec_repr.as_slice()
     }
 
     fn sort_by_pressure(&self) {
-        self.v.apply_and_update(|mut v| {
-            v.sort_unstable_by(|a, b| a.pressure().cmp(&b.pressure()));
-            v
-        });
+        self.vec_repr
+            .sort_unstable_by(|a, b| a.pressure().cmp(&b.pressure()));
     }
 }
 
 impl From<HashMap<u8, Vec<PathBuf>>> for DiskRegistry {
-    fn from(mut m: HashMap<u8, Vec<PathBuf>>) -> Self {
-        let m = m
+    fn from(mut disks_and_paths: HashMap<u8, Vec<PathBuf>>) -> Self {
+        let map_repr = disks_and_paths
             .into_iter()
-            .map(|(disk, paths)| (disk, Arc::new(DiskReader::new(disk, paths))))
-            .collect::<HashMap<u8, Arc<DiskReader>>>();
-        let v = CellSlot::new(m.values().cloned().collect());
-        Self { m, v }
+            .map(|(disk, paths)| (disk, Rc::new(Disk::new(disk, paths))))
+            .collect::<HashMap<u8, Rc<Disk>>>();
+        let vec_repr = map_repr.values().cloned().collect();
+        Self { map_repr, vec_repr }
     }
 }
 
+/// Assumed: greater the pressure on a disk, the greater the benefit of assigning
+/// a thread to read from it.
+pub type DiskPressure = usize;
+
 pub struct Disks {
-    registry: Arc<Mutex<DiskRegistry>>,
+    registry: DiskRegistry,
+    disks_by_pressure: Vec<(usize, Rc<Disk>)>,
     task_counter: TaskCountVar,
-    rng: Arc<Mutex<SmallRng>>,
+    rng: SmallRng,
 }
 
 impl Disks {
     pub fn new(seed_paths: Vec<PathBuf>) -> Self {
         let mut m: HashMap<u8, Vec<PathBuf>> = HashMap::new();
-
         seed_paths.into_iter().for_each(|disk_path| {
             if let Some(disk) = disk_path.components().find_map(|c| match c {
                 std::path::Component::Prefix(prefix) => match prefix.kind() {
@@ -151,19 +123,16 @@ impl Disks {
                 m.entry(disk).and_modify(|v| v.push(disk_path)).or_default();
             }
         });
+        let registry: DiskRegistry = m.into();
+
+        let disks_by_pressure = registry.disks_by_pressure();
 
         Disks {
-            registry: DiskRegistry::arc_mutex_from(m),
-            rng: Arc::new(Mutex::new(SmallRng::from_entropy())),
+            registry,
+            rng: SmallRng::from_entropy(),
             task_counter: TaskCountVar::default(),
+            disks_by_pressure,
         }
-    }
-
-    pub fn insert_tasks(&mut self, disk: u8, tasks: FoundTasks) {
-        if let Some(disk) = self.registry.lock().unwrap().get(&disk) {
-            disk.extend(tasks)
-        }
-        self.task_counter.notify_all();
     }
 
     fn get_random_reader_from_high_pressure(
@@ -171,11 +140,10 @@ impl Disks {
         at_most: Option<usize>,
         metrics: Box<ThreadMetrics>,
     ) -> Option<TaskPacket> {
-        let high_pressure_disks = self.registry.disks_with_highest_pressures();
-        for disk in high_pressure_disks.choose_multiple(
-            self.rng.lock().unwrap().deref_mut(),
-            high_pressure_disks.len(),
-        ) {
+        let high_pressure_disks = self.registry.disks_by_pressure();
+        for disk in high_pressure_disks
+            .choose_multiple(self.rng.lock().deref_mut(), high_pressure_disks.len())
+        {
             let reader = disk.get_reader(self.clone(), at_most, metrics);
             if reader.is_some() {
                 return reader;
@@ -200,30 +168,65 @@ impl Disks {
 pub type FoundTasks = Vec<PathBuf>;
 pub type TaskSlice<'a> = &'a [PathBuf];
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ErrorDir {
     #[allow(unused)]
-    err: IoErr,
+    err: String,
     #[allow(unused)]
     path: PathBuf,
 }
 
 impl ErrorDir {
-    pub fn new(path: PathBuf, err: IoErr) -> Self {
-        Self { err, path }
+    pub fn new(path: PathBuf, err: IoError) -> Self {
+        Self {
+            err: err.to_string(),
+            path,
+        }
     }
 }
 
-#[derive(Debug)]
-pub struct DiskReader {
-    disk: u8,
-    task_buf: SharedBuf<PathBuf>,
-    access_mutex: Mutex<()>,
+#[derive()]
+pub struct DiskEntry {
+    path: PathBuf,
+    metadata: Metadata,
+}
+
+pub type DiskEntries = QBuf<DiskEntry>;
+
+#[derive()]
+pub struct DiskContents {
+    paths: DiskEntries,
+    entries: Vec<DirEntry>,
     errors: Mutex<Vec<ErrorDir>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct NonDir(PathBuf);
+
+#[derive(Debug, Clone)]
+pub enum DiskContent {
+    Complete {
+        path: PathBuf,
+        metadata: Metadata,
+        contents: NonDir,
+    },
+    Partial {
+        path: PathBuf,
+        metadata: Metadata,
+    },
+    Error(ErrorDir),
+    Path(PathBuf),
+}
+
+#[derive(Debug)]
+pub struct Disk {
+    disk: u8,
+    contents: QBuf<DiskContent>,
+    changed: bool,
+}
+
 pub struct TaskPacket<'a> {
-    pub disk: Arc<DiskReader>,
+    pub disk: Rc<Disk>,
     pub tasks: TaskSlice<'a>,
 }
 
@@ -231,8 +234,16 @@ pub struct DirContents {
     sub_dirs: Vec<IoResult<DirEntry>>,
 }
 
+impl FromIterator<IoResult<DirEntry>> for DirContents {
+    fn from_iter<Iterable: IntoIterator<Item = IoResult<DirEntry>>>(iter: Iterable) -> Self {
+        Self {
+            sub_dirs: iter.into_iter().collect(),
+        }
+    }
+}
+
 impl<'a> TaskPacket<'a> {
-    fn new(parent: Arc<DiskReader>, tasks: TaskSlice) -> Self {
+    fn new(parent: Rc<Disk>, tasks: TaskSlice) -> Self {
         Self {
             disk: parent,
             tasks,
@@ -240,7 +251,7 @@ impl<'a> TaskPacket<'a> {
     }
 
     pub fn disk_read(&self) -> Vec<IoResult<DirContents>> {
-        let disk_guard = self.disk.access_mutex.lock().unwrap();
+        let disk_guard = self.disk.io_semaphore.read();
         // Here the assumption is that `read_dir` is the iterator object that
         // actually "causes" reads to be executed on the physical disk
         self.tasks
@@ -250,31 +261,30 @@ impl<'a> TaskPacket<'a> {
     }
 
     pub fn record_errors(&self, errors: Vec<ErrorDir>) {
-        self.disk.errors.lock().unwrap().extend(errors);
+        self.disk.errors.lock().extend(errors);
     }
 
     pub fn record_new_tasks(&self, dirs: FoundTasks) {
-        self.disk.task_buf.write(dirs)
+        self.disk.dirs.write(dirs)
     }
 
     pub fn record_results(&self, errors: Vec<ErrorDir>, found: FoundTasks) {
-        self.disk.errors.lock().unwrap()
+        self.disk.errors.lock()
     }
 }
 
-impl DiskReader {
+impl Disk {
     fn new(disk: u8, tasks: impl IntoIterator<Item = PathBuf>) -> Self {
         Self {
             disk,
-            task_buf: SharedBuf::new(tasks).into(),
-            access_mutex: DiskMutex::default(),
-            errors: Mutex::new(Vec::new()),
+            contents: QBuf::from_iter(tasks),
+            changed: false,
         }
     }
 
     fn pressure(&self) -> usize {
-        (*self.active_readers.read().unwrap() == 0)
-            .then(|| self.task_buf.reads_available())
+        (*self.contents.read().unwrap() == 0)
+            .then(|| self.dirs.reads_available())
             .flatten()
             .unwrap_or(0)
     }
@@ -292,10 +302,10 @@ impl DiskReader {
     }
 
     fn get_tasks(&self, at_most: Option<usize>) -> Option<TaskSlice> {
-        self.task_buf.read(at_most)
+        self.dirs.read(at_most)
     }
 
     fn push(&self, tasks: FoundTasks) {
-        self.task_buf.push(tasks)
+        self.dirs.push(tasks)
     }
 }

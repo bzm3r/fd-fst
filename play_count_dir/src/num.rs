@@ -2,7 +2,16 @@ use crate::{
     num_check::{NumErr, NumResult},
     num_conv::TryIntoNum,
 };
-use std::{cmp::Ordering, fmt::Debug};
+use std::sync::atomic::Ordering as AtomicOrdering;
+use std::{
+    cmp::Ordering,
+    fmt::Debug,
+    sync::atomic::{AtomicU16, AtomicU32, AtomicU64, AtomicUsize},
+};
+use std::{
+    ops::{Add, Div, Mul, Sub},
+    sync::atomic::AtomicU8,
+};
 
 use crate::num_check::{FiniteTest, NonNegTest, NonZeroTest};
 
@@ -75,3 +84,42 @@ where
 }
 
 impl<T> CmpWithF64 for T where T: TryIntoNum<f64> {}
+
+pub trait SignedNum
+where
+    Self: Num
+        + FiniteTest
+        + NonNegTest
+        + Add<Self, Output = Self>
+        + Mul<Self, Output = Self>
+        + Sub<Self, Output = Self>
+        + Div<Self, Output = Self>,
+{
+    fn positive(self) -> bool;
+    fn negative(self) -> bool;
+    fn signum(self) -> Self;
+}
+
+pub trait UnsignedNum
+where
+    Self: Num
+        + FiniteTest
+        + Add<Self, Output = Self>
+        + Mul<Self, Output = Self>
+        + Sub<Self, Output = Self>
+        + Div<Self, Output = Self>,
+{
+    const ONE: Self;
+    const ZERO: Self;
+}
+
+macro_rules! impl_unum {
+    ($($t:ty),*) => {
+        $(impl UnsignedNum for $t {
+            const ONE: Self = 1;
+            const ZERO: Self = 0;
+        })*
+    };
+}
+
+impl_unum!(u8, u32, usize);

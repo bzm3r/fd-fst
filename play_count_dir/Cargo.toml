@@ -21,7 +21,8 @@ rkyv = { version = "0.7.42", default-features = false, features = [
 ] }
 paste = "1.0.14"
 rand = { version = "0.8.5", features = ["small_rng"] }
-parking_lot = "0.12.1"
-crossbeam-channel = "0.5.8"
 walkdir = "2.4.0"
 rayon = "1.7.0"
+crossbeam = "0.8.2"
+parking_lot = { version = "0.12.1", features = ["deadlock_detection"] }
+parking_lot_core = { version = "0.9.8", features = ["deadlock_detection"] }

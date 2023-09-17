@@ -4,30 +4,37 @@
 trace_macros!(false);
 
 mod adp_num;
+mod arc_locks;
+mod atomic_counter;
+mod cond_lock;
+mod cond_mutex;
 mod disk;
-mod display;
 mod flat_buf;
 mod hist_defs;
 mod history;
+mod intervals;
 mod misc_types;
 mod num;
 mod num_absf64;
 mod num_check;
 mod num_conv;
+mod num_display;
 mod num_duration;
 mod num_f64;
 mod num_hist;
 mod num_isize;
 mod num_u32;
+mod num_u8;
 mod num_usize;
+mod qbuf;
 mod run_info;
-mod shared_buf;
+mod semaphore;
 mod sig_figs;
-mod signed_num;
-mod task_error;
 mod task_results;
+mod work;
+mod count_lock;
 
-use crossbeam_channel::{bounded, Receiver, SendError, Sender, TryRecvError};
+use crossbeam::channel::{bounded, Receiver, SendError, Sender, TryRecvError};
 use disk::{DiskRegistry, ErrorDir, FoundTasks, TaskPacket};
 use hist_defs::{ProcessingRate, TimeSpan};
 use history::{AvgInfoBundle, HistoryVec};
@@ -45,12 +52,12 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
-use task_error::WorkError;
-use task_results::WorkResult;
+use work::WorkError;
+use work::WorkResult;
 
 use crate::disk::Disks;
-use crate::display::CustomDisplay;
 use crate::history::AvgInfoWithSummaries;
+use crate::num_display::NumDisplay;
 
 pub const NUM_THREADS: usize = 3;
 pub const DEFAULT_EXECUTE_LOOP_SLEEP: Duration = Duration::from_micros(10);
@@ -461,15 +468,15 @@ impl Executor {
             info_with_summaries
                 .summary_processing_rates
                 .max
-                .custom_display(),
+                .num_display(),
             info_with_summaries
                 .summary_processing_rates
                 .min
-                .custom_display(),
+                .num_display(),
             info_with_summaries
                 .summary_processing_rates
                 .total
-                .custom_display(),
+                .num_display(),
         );
 
         println!(
@@ -482,22 +489,16 @@ impl Executor {
 
         println!(
             "task times:  (max: {}, min: {}, total:{})",
-            info_with_summaries.summary_task_times.max.custom_display(),
-            info_with_summaries.summary_task_times.min.custom_display(),
-            info_with_summaries
-                .summary_task_times
-                .total
-                .custom_display(),
+            info_with_summaries.summary_task_times.max.num_display(),
+            info_with_summaries.summary_task_times.min.num_display(),
+            info_with_summaries.summary_task_times.total.num_display(),
         );
 
         println!(
             "idle times:  (max: {}, min: {}, total: {})",
-            info_with_summaries.summary_idle_times.max.custom_display(),
-            info_with_summaries.summary_idle_times.min.custom_display(),
-            info_with_summaries
-                .summary_idle_times
-                .total
-                .custom_display(),
+            info_with_summaries.summary_idle_times.max.num_display(),
+            info_with_summaries.summary_idle_times.min.num_display(),
+            info_with_summaries.summary_idle_times.total.num_display(),
         );
 
         for (ix, avg_info_bundle) in avg_infos.iter().enumerate() {
@@ -641,5 +642,5 @@ fn main() {
     );
     let result = manager.execute().unwrap();
     println!("Final max dir entry count: {}", result);
-    println!("Took {}.", start.elapsed().custom_display());
+    println!("Took {}.", start.elapsed().num_display());
 }

@@ -1,12 +1,11 @@
 use rkyv::with;
 
 use crate::{
-    display::CustomDisplay,
     hist_defs::*,
-    num::Num,
+    num::{Num, SignedNum},
     num_check::NumResult,
     num_hist::{HistoryNum, InnerAbsolute},
-    signed_num::SignedNum,
+    num_display::NumDisplay,
 };
 use std::fmt::Debug;
 use std::{cmp::Ordering, fmt::Display};
@@ -83,7 +82,7 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct HistoryVec<Data>
 where
     Data: HistoryNum,
@@ -222,14 +221,14 @@ impl Display for AvgInfoBundle {
         write!(
             f,
             "pr: {} | tt/it: {} | tt: {} | it : {}",
-            self.processing_rate.data.custom_display(),
+            self.processing_rate.data.num_display(),
             self.task_time
                 .data
                 .ratio(self.idle_time.data)
-                .map(|f| f.custom_display())
+                .map(|f| f.num_display())
                 .unwrap_or("None".into()),
-            self.task_time.data.custom_display(),
-            self.idle_time.data.custom_display(),
+            self.task_time.data.num_display(),
+            self.idle_time.data.num_display(),
         )
     }
 }

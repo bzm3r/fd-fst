@@ -2,12 +2,11 @@ use std::{cmp::Ordering, time::Duration};
 
 use crate::{
     adp_num::{AbsoluteNum, AdaptorNum, DivUsize},
-    num::{CmpWithF64, Testable},
+    num::{CmpWithF64, SignedNum, Testable},
     num_absf64::AbsF64,
     num_check::{FiniteTest, NonNegTest, NonZeroTest, NumErr, NumResult},
     num_conv::{FromNum, TryFromNum},
     num_hist::{HistData, HistoryNum},
-    signed_num::SignedNum,
 };
 
 impl SignedNum for f64 {
@@ -105,3 +104,4 @@ impl DivUsize for f64 {
 }
 
 impl AbsoluteNum<f64> for f64 {}
+

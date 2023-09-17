@@ -1,2 +1,5 @@
 /target
 /play*/target/
+/.idea/*
+play_count_dir/.bacon-locations
+bacon.toml

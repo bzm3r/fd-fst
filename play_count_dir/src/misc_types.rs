@@ -1,26 +1,45 @@
-use parking_lot::{Mutex, RwLock};
-use std::cell::Cell;
-use std::fmt::Debug;
+use crossbeam::atomic::AtomicCell;
+use parking_lot::{
+    deadlock,
+    lock_api::{GuardNoSend, RawRwLock},
+    Condvar, Mutex, MutexGuard, RawMutex as UnitMutex, RawRwLock as UnitRwLock, RwLock,
+    WaitTimeoutResult,
+};
+use parking_lot_core::{ParkResult, UnparkToken, DEFAULT_PARK_TOKEN};
 use std::sync::Arc;
+use std::{cell::Cell, char::MAX, sync::atomic::AtomicU8};
+use std::{
+    fmt::Debug,
+    ops::{Add, Sub},
+};
+use std::{
+    sync::atomic::{AtomicPtr, Ordering},
+    time::Instant,
+};
 
-#[derive(Default)]
-pub struct CellSlot<T: Clone + Debug> {
+pub struct CellOpt<T: Clone + Debug> {
     slot: Cell<Option<T>>,
 }
 
-impl<T: Clone + Debug> Clone for CellSlot<T> {
-    fn clone(&self) -> Self {
-        self.apply_then_restore(|inner| CellSlot::new(inner.clone()))
+impl<T: Clone + Debug> Default for CellOpt<T> {
+    fn default() -> Self {
+        CellOpt {
+            slot: Cell::new(None),
+        }
     }
 }
 
-impl<T: Clone + Debug> Debug for CellSlot<T> {
+impl<T: Clone + Debug> Clone for CellOpt<T> {
+    fn clone(&self) -> Self {
+        self.apply_then_restore(|inner| CellOpt::new(inner.clone()))
+            .unwrap_or_default()
+    }
+}
+
+impl<T: Clone + Debug> Debug for CellOpt<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            self.apply_then_restore(|inner| format!("{:?}", inner)),
-        )
+        self.apply_then_restore(|inner| write!(f, "{}", format!("Option::Some({:?})", inner)))
+            .unwrap_or_else(|| write!(f, "None"))
     }
 }
 
@@ -30,7 +49,12 @@ pub enum ValueError {
     Empty,
 }
 
-impl<T: Clone + Debug> CellSlot<T> {
+pub struct InsertErr<T> {
+    to_insert: T,
+    err: ValueError,
+}
+
+impl<T: Clone + Debug> CellOpt<T> {
     #[inline]
     pub fn new(value: T) -> Self {
         Self {
@@ -39,22 +63,30 @@ impl<T: Clone + Debug> CellSlot<T> {
     }
 
     #[inline]
-    pub fn apply_then_restore<U, F: Fn(&T) -> U>(&self, f: F) -> U {
-        let slot = self.force_take();
-        let u = f(&slot);
-        self.overwrite(slot);
-        u
+    pub fn apply_then_restore<U, F: Fn(T) -> U>(&self, f: F) -> Option<U> {
+        self.take()
+            .map(|t| {
+                let u = f(t);
+                self.overwrite(t);
+                u
+            })
+            .ok()
     }
 
     #[inline]
     pub fn apply_and_update<F: Fn(T) -> T>(&self, f: F) {
-        self.overwrite(f(self.force_take()));
+        if let Ok(t) = self.take() {
+            self.overwrite(f(t));
+        }
     }
 
     #[inline]
-    pub fn insert(&self, value: T) -> Result<(), (T, ValueError)> {
+    pub fn insert(&self, value: T) -> Result<(), InsertErr<T>> {
         if self.is_occupied() {
-            Err((value, ValueError::Occupied))
+            Err(InsertErr {
+                to_insert: value,
+                err: ValueError::Occupied,
+            })
         } else {
             self.overwrite(value);
             Ok(())
@@ -86,28 +118,3 @@ impl<T: Clone + Debug> CellSlot<T> {
         self.slot.replace(value.into());
     }
 }
-
-pub type ArcRwLock<T> = Arc<RwLock<T>>;
-pub type ArcMutex<T> = Arc<Mutex<T>>;
-
-pub trait ArcRwLockFrom
-where
-    Self: Sized,
-{
-    fn arc_rwlock_from(value: Self) -> ArcRwLock<Self> {
-        Arc::new(RwLock::new(value))
-    }
-}
-
-impl<T> ArcRwLockFrom for T where T: Sized {}
-
-pub trait ArcMutexFrom
-where
-    Self: Sized,
-{
-    fn arc_mutex_from(value: Self) -> ArcMutex<Self> {
-        Arc::new(Mutex::new(value))
-    }
-}
-
-impl<T> ArcMutexFrom for T where T: Sized {}

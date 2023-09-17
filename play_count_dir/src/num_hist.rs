@@ -2,10 +2,10 @@ use std::cmp::Ordering;
 
 use crate::{
     adp_num::{AbsoluteNum, AdaptorNum, DivUsize},
-    display::CustomDisplay,
     num::{Num, Testable},
     num_check::{FiniteTest, NonNegTest, NonZeroTest, NumResult},
     num_conv::{FromNum, TryIntoNum},
+    num_display::NumDisplay,
 };
 
 pub trait HistoryNum
@@ -56,7 +56,7 @@ where
 #[derive(Copy, Clone, Debug, Default)]
 pub struct HistData<Absolute, Adaptor>
 where
-    Self: CustomDisplay,
+    Self: NumDisplay,
     Absolute: AbsoluteNum<Adaptor>,
     Adaptor: AdaptorNum<Absolute>,
 {
