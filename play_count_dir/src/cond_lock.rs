@@ -9,10 +9,12 @@ use std::{
 };
 
 use crossbeam::atomic::AtomicCell;
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::{RawRwLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use parking_lot_core::{RequeueOp, UnparkResult, UnparkToken, DEFAULT_PARK_TOKEN};
 
 use crate::{arc_locks::ArcRwLock, num_check::FiniteTest};
+
+pub const UNPARK_NORMAL: UnparkToken = UnparkToken(0);
 
 pub trait RawPredicateLock
 where
@@ -111,24 +113,6 @@ impl<Guard: PredicateLockGuard> WaitOutcome<Guard> {
     }
 }
 
-pub const UNPARK_NORMAL: UnparkToken = UnparkToken(0);
-
-// #[derive(Debug)] pub struct PredicateLock<RawBinLock: RawPredicateLock> {
-// raw: RwLock<Arc<RawBinLock>>, parked: bool, }
-
-pub trait PredicateLock: Debug {
-    type RawLock: RawPredicateLock;
-}
-
-impl<RawLock: RawPredicateLock> From<RawLock> for PredicateLock<RawLock> {
-    fn from(raw: RawLock) -> Self {
-        Self {
-            raw: RwLock::new(Arc::new(raw)),
-            parked: false,
-        }
-    }
-}
-
 pub trait Addressed
 where
     Self: Sized,
@@ -141,13 +125,12 @@ where
     }
 }
 
-impl<RawLock: RawPredicateLock> Addressed for PredicateLock<RawLock> {}
+impl<RawLock: RawPredicateLock, Lock: PredicateLock<RawLock = RawLock>> Addressed for Lock {}
 
-impl<RawLock: RawPredicateLock> PredicateLock<RawLock> {
-    #[inline]
-    pub fn raw(&self) -> Arc<RawLock> {
-        self.raw.read().clone()
-    }
+pub trait PredicateLock: Debug {
+    type RawLock: RawPredicateLock;
+
+    fn raw(&self) -> &Arc<RwLock<Self::RawLock>>;
 
     /// Wakes up one blocked thread.
     ///
@@ -159,8 +142,8 @@ impl<RawLock: RawPredicateLock> PredicateLock<RawLock> {
     ///
     /// To wake up all threads, see `notify_all()`.
     #[inline]
-    pub fn notify_one(&self) -> bool {
-        if self.raw.read().has_parked() {
+    fn notify_one(&self) -> bool {
+        if <Self::RawLock as RawPredicateLock>::has_parked(self.raw().read()) {
             self.notify_one_slow()
         } else {
             false
@@ -211,8 +194,8 @@ impl<RawLock: RawPredicateLock> PredicateLock<RawLock> {
     ///
     /// TODO: figure out if performance is )proved if this is marked #[cold]
     #[inline]
-    pub fn notify_all(&self) -> usize {
-        if self.raw.read().has_parked() {
+    fn notify_all(&self) -> usize {
+        if self.raw().read().has_parked() {
             self.notify_all_slow()
         } else {
             // Nothing to do if there are no waiting threads
@@ -220,7 +203,7 @@ impl<RawLock: RawPredicateLock> PredicateLock<RawLock> {
         }
     }
 
-    pub fn notify_all_slow(&self) -> usize {
+    fn notify_all_slow(&self) -> usize {
         let addr = self.addr();
 
         let validate = || {
@@ -256,9 +239,10 @@ impl<RawLock: RawPredicateLock> PredicateLock<RawLock> {
         res.unparked_threads + res.requeued_threads
     }
 
-    /// Blocks a thread until the timeout: uses [`park`] to cause thread to wait
-    /// until it times out, or gets access from the binary lock.
-    pub fn wait_until_access(&self, timeout: Option<Instant>) -> WaitOutcome<RawLock> {
+    /// Blocks a thread until it acquires access, unless timeout is not passed.
+    /// Uses [`park`] to cause thread to wait until it times out, or gets access
+    /// from the binary lock.
+    fn wait_until_access(&self, timeout: Option<Instant>) -> WaitOutcome<Self::RawLock> {
         let result;
         let mut requeued = false;
         let addr = self.addr();
@@ -290,5 +274,11 @@ impl<RawLock: RawPredicateLock> PredicateLock<RawLock> {
         } else {
             WaitOutcome::TimedOut
         }
+    }
+}
+
+impl<RawLock, Lock: PredicateLock<RawLock = RawLock>> From<RawLock> for Lock {
+    fn from(raw: RawLock) -> Self {
+        Self::new(raw)
     }
 }
