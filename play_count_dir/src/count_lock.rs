@@ -1,4 +1,4 @@
-use crate::{cond_lock::PredicateLock, num::UnsignedNum};
+use crate::{predicate_lock::PredicateLock, num::UnsignedNum};
 
 #[derive(Debug)]
 pub struct CountLock<N: UnsignedNum> {

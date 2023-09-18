@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{semaphore::Semaphore, cond_lock::PredicateLockReadGuard, intervals::Interval};
+use crate::{semaphore::Semaphore, predicate_lock::PredicateLockReadGuard, intervals::Interval};
 
 #[derive(Debug, Default)]
 struct CursorBuf<T> {

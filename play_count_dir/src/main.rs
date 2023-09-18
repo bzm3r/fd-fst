@@ -6,7 +6,7 @@ trace_macros!(false);
 mod adp_num;
 mod arc_locks;
 mod atomic_counter;
-mod cond_lock;
+mod predicate_lock;
 mod cond_mutex;
 mod disk;
 mod flat_buf;

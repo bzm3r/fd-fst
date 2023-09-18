@@ -20,7 +20,7 @@ use std::{
 };
 
 use crate::{
-    cond_lock::{PredicateLock, PredicateLockGuard, RawPredicateLock, WaitOutcome},
+    predicate_lock::{PredicateLock, PredicateLockGuard, RawPredicateLock, WaitOutcome},
     count_lock::{ConstCountLock, CountLock, Counter},
     num::UnsignedNum,
 };
