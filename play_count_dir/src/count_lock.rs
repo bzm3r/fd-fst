@@ -1,15 +1,26 @@
-use crate::{predicate_lock::PredicateLock, num::UnsignedNum};
+use crate::{
+    num::UnsignedNum,
+    predicate_lock::{PredicateLock, RawPredicateLock},
+};
+
+pub trait RawCountingLock: Counter {
+    type N: UnsignedNum;
+
+    fn parked(&self) -> bool;
+}
+
+impl<RawLock: RawCountingLock> RawPredicateLock for RawLock {}
 
 #[derive(Debug)]
-pub struct CountLock<N: UnsignedNum> {
+pub struct CountingLock<N: UnsignedNum> {
     limit: N,
     curr: N,
     parked: bool,
 }
 
-impl<N: UnsignedNum> CountLock<N> {
+impl<N: UnsignedNum> CountingLock<N> {
     pub fn new(max_lim: N) -> Self {
-        CountLock {
+        CountingLock {
             limit: max_lim,
             curr: N::ZERO,
             parked: false,
@@ -33,8 +44,8 @@ impl<const LIMIT: u8> ConstCountLock<LIMIT> {
 }
 
 pub trait Counter<N: UnsignedNum> {
-    fn curr(&self) -> N;
-    fn limit(&self) -> N;
+    fn curr(&mut self) -> N;
+    fn limit(&mut self) -> N;
 
     /// Return true if the semaphore's counter was successfully incremented,
     /// false otherwise. This must be an atomic load acquire + store release.
@@ -59,7 +70,7 @@ pub trait Counter<N: UnsignedNum> {
     }
 }
 
-impl<N: UnsignedNum> Counter<N> for CountLock<N> {
+impl<N: UnsignedNum> Counter<N> for CountingLock<N> {
     fn curr(&self) -> N {
         self.curr
     }

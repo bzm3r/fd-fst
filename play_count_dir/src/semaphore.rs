@@ -20,12 +20,15 @@ use std::{
 };
 
 use crate::{
-    predicate_lock::{PredicateLock, PredicateLockGuard, RawPredicateLock, WaitOutcome},
-    count_lock::{ConstCountLock, CountLock, Counter},
+    count_lock::{ConstCountLock, Counter, CountingLock, RawCountingLock},
     num::UnsignedNum,
+    predicate_lock::{PredicateLock, PredicateLockGuard, RawPredicateLock, WaitOutcome},
 };
 
-pub type SemaphoreLock<N: UnsignedNum, C: Counter<N>> = PredicateLock<C>;
+pub struct SemaphoreLock<C: RawCountingLock> {
+    read_counter: C,
+    write_counter: C,
+}
 
 #[derive(Debug, Clone)]
 pub struct Semaphore<N: UnsignedNum, C: Counter<N>>(Arc<SemaphoreLock<N, C>>);
@@ -35,7 +38,7 @@ pub struct ConstSemaphore<N: UnsignedNum>(Arc<SemaphoreLock<N>>);
 
 impl<N: UnsignedNum> Semaphore<N> {
     pub fn new(max_capacity: N) -> Self {
-        Self(Arc::new(CountLock::new(max_capacity).into()))
+        Self(Arc::new(CountingLock::new(max_capacity).into()))
     }
 }
 
@@ -47,13 +50,13 @@ impl<N: UnsignedNum> Deref for Semaphore<N> {
 }
 
 pub trait SemaphoreReadGuard<N: UnsignedNum>: PredicateLockGuard {
-    fn new(raw: Arc<RwLock<CountLock<N>>>) -> Self;
+    fn new(raw: Arc<RwLock<CountingLock<N>>>) -> Self;
 
     fn read_raw(&self) -> parking_lot::RwLockReadGuard<N>;
 }
 
 pub trait SemaphoreWriteGuard<N: UnsignedNum>: PredicateLockGuard {
-    fn new(raw: Arc<RwLock<CountLock<N>>>) -> Self;
+    fn new(raw: Arc<RwLock<CountingLock<N>>>) -> Self;
 
     fn write_raw(&self) -> parking_lot::RwLockWriteGuard<N>;
 }
@@ -78,7 +81,7 @@ pub struct CountGuard<C> {}
 
 impl<C: C> PredicateLockGuard for CountGuard<C> {}
 
-impl<N: UnsignedNum, T> RawPredicateLock for CountLock<N> {
+impl<N: UnsignedNum, T> RawPredicateLock for CountingLock<N> {
     #[inline]
     fn lock(self: &mut Arc<Self>) -> Option<SemaphoreReadGuard<N>> {
         self.increment()
@@ -109,14 +112,14 @@ impl<N: UnsignedNum, T> RawPredicateLock for CountLock<N> {
 }
 
 impl<N: UnsignedNum> Semaphore<N> {
-    fn create_access(&self) -> PredicateLockGuard<CountLock<N>> {
+    fn create_access(&self) -> PredicateLockGuard<CountingLock<N>> {
         PredicateLockGuard::new(self.0.raw())
     }
 
     /// Wait on the semaphore until a token can be provided.
     #[inline]
-    fn access(&self) -> PredicateLockGuard<CountLock<N>> {
-        let mut result: Option<WaitOutcome<CountLock<N>>> = None;
+    fn access(&self) -> PredicateLockGuard<CountingLock<N>> {
+        let mut result: Option<WaitOutcome<CountingLock<N>>> = None;
 
         while !result.is_some_and(|result| result.timed_out()) {
             result.replace(self.0.wait_until_access(None));
