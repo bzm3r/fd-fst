@@ -2,7 +2,7 @@ use crate::{
     arc_locks::{ArcMutex, ArcMutexFrom, ArcRwLockFrom},
     qbuf::QBuf,
     run_info::ThreadMetrics,
-    semaphore::Semaphore,
+    semaphore::RwSemaphore,
 };
 use chrono::format::Item;
 use core::num;
@@ -283,7 +283,7 @@ impl Disk {
     }
 
     fn pressure(&self) -> usize {
-        (*self.contents.read().unwrap() == 0)
+        (*self.contents.read(None).len() == 0)
             .then(|| self.dirs.reads_available())
             .flatten()
             .unwrap_or(0)

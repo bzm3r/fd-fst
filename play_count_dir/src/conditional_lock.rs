@@ -3,7 +3,7 @@
 /// queue keyed by some address and resuming it.
 use std::{
     fmt::Debug,
-    ops::Deref,
+    ops::{Deref, DerefMut},
     sync::{atomic::Ordering, Arc},
     time::Instant,
 };
@@ -16,86 +16,72 @@ use crate::{arc_locks::ArcRwLock, num_check::FiniteTest};
 
 pub const UNPARK_NORMAL: UnparkToken = UnparkToken(0);
 
-pub trait RawPredicateLock
+pub trait LockState
 where
     Self: Sized + Debug,
 {
-    /// Apply a lock operation to this binary lock, if possible. This action has
-    /// to be thread safe, as multiple threads could be attempting it.
-    fn lock(&mut self);
+    /// Determine if this lock should be considered locked.
+    ///
+    /// This predicate is fundamental to governing the behaviour of RawLock
+    fn locked(&self) -> bool;
 
-    /// Apply an unlock operation to this binary lock. /// This action has to be
-    /// thread safe, as multiple threads could be attempting it.
+    /// Apply a lock operation to this binary lock, if possible.
+    ///
+    /// Return whether or not the lock operation was successful.
+    fn lock(&mut self) -> bool;
+
+    /// Apply an unlock operation to this binary lock.
+    ///
+    /// Return whether or not the unlock operation was successful.
     fn unlock(&mut self);
-
-    /// Check if this condition is in such a state that it is locked.
-    ///
-    /// Lock state only makes sense if the thread also has parked threads.
-    ///
-    /// This action has to be thread safe, as multiple threads could be
-    /// attempting it.
-    #[inline]
-    fn has_parked_then_is_locked(self: &Arc<Self>) -> Option<bool> {
-        self.has_parked().then(|| !(self.is_locked()))
-    }
-
-    /// Check if this lock has been marked as 'parked'. This action has to be
-    /// thread safe, as multiple threads could be attempting it.
-    fn has_parked(self: &Arc<Self>) -> bool;
-
-    /// Mark lock as having thread that are parked due to its condition. This
-    /// action has to be thread safe, as multiple threads could be attempting
-    /// it.
-    fn mark_parked(self: &mut Arc<Self>);
-
-    /// Mark lock as having thread that are parked due to its condition. This
-    /// action has to be thread safe, as multiple threads could be attempting
-    /// it.
-    fn mark_unparked(self: &mut Arc<Self>);
-
-    /// Check if this binary lock is currently locked
-    fn is_locked(&self) -> bool;
 }
 
-// /// Access to the lock is released when it is dropped. #[derive(Debug)] pub
-// struct ConditionalLockGuard<C: RawConditionalLock>(Arc<C>);
+pub trait LockGuard<'a>
+where
+    Self: 'a,
+{
+    type L: Lock;
 
-// impl<C: RawConditionalLock> ConditionalLockGuard<C> { pub fn new(c: Arc<C>)
-//     -> Self { Self(c.clone()) } }
-
-// impl<C: RawConditionalLock> Drop for ConditionalLockGuard<C> { fn drop(&mut
-//     self) { self.0.unlock(); } }
-
-pub trait PredicateLockGuard {
-    type BinaryLock: RawPredicateLock;
     /// Create a new guard around the provided raw binary lock
-    fn new(raw: Arc<RwLock<Self::BinaryLock>>) -> Self;
+    fn new(raw: Arc<Self::L>) -> Self;
+
+    /// The "parent" lock this conditional is associated with.
+    fn parent(&self) -> &Arc<Self::L>;
 }
 
-pub trait PredicateLockReadGuard<'a, T>: PredicateLockGuard {
-    fn read(&self) -> &'a T;
-}
-
-pub trait PredicateLockWriteGuard<'a, T>: PredicateLockGuard {
-    fn write(&self) -> &'a mut T;
-}
-
-impl<Guard: PredicateLockGuard> Drop for Guard {
+impl<'a, G: LockGuard<'a>> Drop for G {
     fn drop(&mut self) {
-        self.write_raw().unlock()
+        self.parent().lock_state().write().unlock()
     }
 }
+
+pub trait AbstractReadGuard<'a>
+where
+    Self: LockGuard<'a> + Deref<Target = Self::Data>,
+{
+    type Data;
+}
+
+/// Considered "raw" because it does not refer to any resource it is ultimately
+/// used to protect.
+pub trait AbstractWriteGuard<'a>
+where
+    Self: LockGuard<'a> + Deref<Target = Self::Data> + DerefMut<Target = Self::Data>,
+{
+    type Data;
+}
+
+pub type WaitResult<'a, G: LockGuard<'a>> = Result<G, WaitError>;
 
 /// Returns the result of waiting on a [`CondLock`].
 #[derive(Debug)]
-pub enum WaitOutcome<Guard: PredicateLockGuard> {
-    Success(Guard),
+pub enum WaitError {
     Failure,
     Requeued,
     TimedOut,
 }
 
-impl<Guard: PredicateLockGuard> WaitOutcome<Guard> {
+impl WaitError {
     /// Check if the result indicates a timeout.
     pub fn timed_out(&self) -> bool {
         match self {
@@ -103,34 +89,24 @@ impl<Guard: PredicateLockGuard> WaitOutcome<Guard> {
             _ => false,
         }
     }
-
-    /// Check if result indicates successful gain of access.
-    pub fn acquired_access(&self) -> bool {
-        match self {
-            Self::Success(_) => true,
-            _ => false,
-        }
-    }
 }
 
-pub trait Addressed
-where
-    Self: Sized,
-{
-    /// The address used to look up the queue of threads parked due this being
-    /// locked.
-    #[inline]
-    fn addr(&self) -> usize {
-        self as *const _ as usize
-    }
-}
+/// Considered "raw" because it abstracts away any resource that it might
+/// ultimately be protecting.
+pub trait Lock: Debug {
+    type State: LockState;
+    /// Retrieves the underlying lock state.
+    fn lock_state<'a>(self: &'a Arc<Self>) -> &'a RwLock<Self::State>;
 
-impl<RawLock: RawPredicateLock, Lock: PredicateLock<RawLock = RawLock>> Addressed for Lock {}
+    /// Check if this lock has parked (suspended) threads that have not yet
+    /// been woken up
+    fn parked(&self) -> bool;
 
-pub trait PredicateLock: Debug {
-    type RawLock: RawPredicateLock;
+    /// Mark lock as having parked (suspended) threads
+    fn mark_parked(&mut self);
 
-    fn raw(&self) -> &Arc<RwLock<Self::RawLock>>;
+    /// Mark lock as having thread that are parked due to its condition
+    fn mark_unparked(&mut self);
 
     /// Wakes up one blocked thread.
     ///
@@ -143,7 +119,7 @@ pub trait PredicateLock: Debug {
     /// To wake up all threads, see `notify_all()`.
     #[inline]
     fn notify_one(&self) -> bool {
-        if <Self::RawLock as RawPredicateLock>::has_parked(self.raw().read()) {
+        if self.parked() {
             self.notify_one_slow()
         } else {
             false
@@ -157,7 +133,7 @@ pub trait PredicateLock: Debug {
         let validate = || {
             // Unpark one thread if the underlying lock is unlocked, otherwise
             // just requeue everything to the lock.
-            match self.raw.read().has_parked_then_is_locked() {
+            match self.parked().then(|| !self.lock_state().read().locked()) {
                 Some(true) => {
                     self.raw.write().mark_parked();
                     RequeueOp::RequeueOne
@@ -195,7 +171,7 @@ pub trait PredicateLock: Debug {
     /// TODO: figure out if performance is )proved if this is marked #[cold]
     #[inline]
     fn notify_all(&self) -> usize {
-        if self.raw().read().has_parked() {
+        if self.lock_state().read().has_parked() {
             self.notify_all_slow()
         } else {
             // Nothing to do if there are no waiting threads
@@ -242,7 +218,7 @@ pub trait PredicateLock: Debug {
     /// Blocks a thread until it acquires access, unless timeout is not passed.
     /// Uses [`park`] to cause thread to wait until it times out, or gets access
     /// from the binary lock.
-    fn wait_until_access(&self, timeout: Option<Instant>) -> WaitOutcome<Self::RawLock> {
+    fn wait_until_access(&self, timeout: Option<Instant>) -> WaitResult<Self::State> {
         let result;
         let mut requeued = false;
         let addr = self.addr();
@@ -265,20 +241,28 @@ pub trait PredicateLock: Debug {
             };
         }
         if requeued {
-            WaitOutcome::Requeued
+            WaitResult::Requeued
         } else if result.is_unparked() {
             self.raw
                 .write()
                 .lock()
-                .map_or(WaitOutcome::Failure, |access| WaitOutcome::Success(access))
+                .map_or(WaitResult::Failure, |access| WaitResult::Success(access))
         } else {
-            WaitOutcome::TimedOut
+            WaitResult::TimedOut
         }
     }
 }
 
-impl<RawLock, Lock: PredicateLock<RawLock = RawLock>> From<RawLock> for Lock {
-    fn from(raw: RawLock) -> Self {
-        Self::new(raw)
+pub trait Addressed
+where
+    Self: Sized,
+{
+    /// The address used to look up the queue of threads parked due this being
+    /// locked.
+    #[inline]
+    fn addr(&self) -> usize {
+        self as *const _ as usize
     }
 }
+
+impl<L: Lock> Addressed for L {}

@@ -1,10 +1,16 @@
-use parking_lot::{Condvar, Mutex};
+use parking_lot::{Condvar, Mutex, RwLock};
 use std::{
+    collections::HashSet,
     sync::{atomic::AtomicU8, TryLockError},
     time::Duration,
 };
 
-use crate::{semaphore::Semaphore, predicate_lock::PredicateLockReadGuard, intervals::Interval};
+use crate::{
+    conditional_lock::LockGuard,
+    intervals::Interval,
+    num::UnsignedNum,
+    semaphore::{RwSemaphore, SemaphoreReadGuard},
+};
 
 #[derive(Debug, Default)]
 struct CursorBuf<T> {
@@ -46,32 +52,33 @@ impl<T> FromIterator<T> for CursorBuf<T> {
     }
 }
 
-struct IntervalLocks {
-    locks: Vec<Interval>,
-    semaphore: Semaphore<usize>,
+struct Intervals {
+    intervals: HashSet<Interval>,
 }
 
 #[derive(Debug)]
 pub struct QBuf<T> {
-    buf: CursorBuf<T>,
+    buf: RwSemaphore<u8, CursorBuf<T>>,
+    exclusive_intervals: RwLock<Intervals>,
+    shared_intervals: RwLock<Intervals>,
 }
 
 impl<T> QBuf<T> {
-    pub fn new(init: impl IntoIterator<Item = T>, max_reads: u8, max_writes: u8) -> Self {
+    pub fn new(init: impl IntoIterator<Item = T>) -> Self {
         Self {
-            buf: Mutex::new(init.into_iter().collect()),
-            read_sem: Semaphore::new(max_reads),
-            write_sem: Semaphore::new(max_writes),
+            buf: RwSemaphore::new(u8::MAX, 1, CursorBuf::default()),
+            exclusive_intervals: RwLock::new(Intervals::new()),
+            shared_intervals: RwLock::new(Intervals::new()),
         }
     }
 
     pub fn append(&self, items: Vec<T>) {
-        self.buf.lock().write(items);
-        self.read_ready.notify_all();
+        self.buf().write().extend(items);
+        self.buf().notify_all();
     }
 
     pub fn reads_active(&self) -> u8 {
-        self.read_sem.
+        self.buf.readers()
     }
 
     pub fn reads_available(&self) -> Option<usize> {
@@ -82,7 +89,7 @@ impl<T> QBuf<T> {
         }
     }
 
-    pub fn read<'a>(&'a self, at_most: Option<usize>) -> QBufReadGuard<'a, [T]> {
+    pub fn read<'a>(&'a self, at_most: Option<usize>) -> SemaphoreReadGuard<'a, u8, [T]> {
         let mut buf_guard = self.buf.lock();
         if buf_guard.reads_available() == 0 {
             let (buf_guard, wait_timeout) = self
@@ -100,12 +107,3 @@ impl<T> QBuf<T> {
         read_slice.into()
     }
 }
-
-pub struct QBufReadGuard<'a, T> {
-    resource: &'a T,
-}
-
-impl<'a, T> PredicateLockReadGuard<'a, T> for QBufReadGuard<'a, T> {
-
-}
-
