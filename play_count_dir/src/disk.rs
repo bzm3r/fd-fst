@@ -2,7 +2,6 @@ use crate::{
     arc_locks::{ArcMutex, ArcMutexFrom, ArcRwLockFrom},
     qbuf::QBuf,
     run_info::ThreadMetrics,
-    semaphore::RwSemaphore,
 };
 use chrono::format::Item;
 use core::num;

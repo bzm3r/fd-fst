@@ -6,7 +6,7 @@ trace_macros!(false);
 mod adp_num;
 mod arc_locks;
 mod atomic_counter;
-mod conditional_lock;
+mod cond_lock;
 mod cond_mutex;
 mod disk;
 mod flat_buf;
@@ -32,7 +32,8 @@ mod semaphore;
 mod sig_figs;
 mod task_results;
 mod work;
-mod counting_lock;
+mod ac_lock;
+mod guards;
 
 use crossbeam::channel::{bounded, Receiver, SendError, Sender, TryRecvError};
 use disk::{DiskRegistry, ErrorDir, FoundTasks, TaskPacket};

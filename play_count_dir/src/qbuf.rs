@@ -5,12 +5,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{
-    conditional_lock::LockGuard,
-    intervals::Interval,
-    num::UnsignedNum,
-    semaphore::{RwSemaphore, SemaphoreReadGuard},
-};
+use crate::{intervals::Interval, num::UnsignedNum};
 
 #[derive(Debug, Default)]
 struct CursorBuf<T> {
